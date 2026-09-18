@@ -1,0 +1,14 @@
+{
+  "nim-bundle.js": {
+    "bytes": 6566418,
+    "sha256": "170a78937e21ac0ec47e7d3f0eccefc261178f336ba92ab43acdb2f73ffd1301"
+  },
+  "nim.wasm": {
+    "bytes": 4812366,
+    "sha256": "40e8c62fb96ee786fcd91f0ee2306241adeaf38c148bc8ec9788e0cc5cb26567"
+  },
+  "nimbase.h": {
+    "bytes": 20734,
+    "sha256": "28491d05916eab446de054370808030b33b63fd5623dcd454212adec27ee934d"
+  }
+}
