@@ -66,7 +66,7 @@ describe('Nim in the browser pipeline', () => {
 
 	const build = async (source) => {
 		compilerOutput = [];
-		const generated = nim.compile(source);
+		const generated = nim.compileToC(source);
 		const translationUnits = generated.files.map((file, index) => ({
 			path: `nim/unit-${String(index).padStart(3, '0')}.c`,
 			content: file.content
@@ -82,7 +82,7 @@ describe('Nim in the browser pipeline', () => {
 	};
 
 	it('compiles Nim to C', () => {
-		const generated = nim.compile(SAMPLE);
+		const generated = nim.compileToC(SAMPLE);
 		assert.ok(generated.ok, `expected generated C\n${generated.diagnostics.join('\n')}`);
 		assert.ok(
 			generated.files.some((file) => file.content.includes('int main')),
@@ -111,7 +111,7 @@ describe('Nim in the browser pipeline', () => {
 	});
 
 	it('reports a Nim error without reaching the C compiler', () => {
-		const generated = nim.compile('let x: int = "not an int"\n');
+		const generated = nim.compileToC('let x: int = "not an int"\n');
 		assert.equal(generated.ok, false);
 		assert.ok(
 			generated.diagnostics.some((line) => /Error:/.test(line)),

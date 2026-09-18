@@ -2349,108 +2349,6 @@ var init_browser = __esm({
   }
 });
 
-// src/nim-to-c.js
-var NIM_CACHE_DIR = "/tmp/nimcache";
-var NIM_USER_FILE = "/tmp/user.nim";
-var NIM_COMPILE_ARGS = Object.freeze([
-  "c",
-  "--hints:off",
-  "-d:release",
-  "-d:useMalloc",
-  "--compileOnly",
-  `--nimcache:${NIM_CACHE_DIR}`,
-  "--path:/lib/pure",
-  "--path:/lib/pure/collections",
-  "--path:/lib/core",
-  "-o:/tmp/user",
-  "/tmp/user.nim"
-]);
-var C_FILE = /\.(?:c|cpp)$/;
-var listCache = (FS, cacheDir) => {
-  try {
-    return FS.readdir(cacheDir).filter((name) => name !== "." && name !== "..");
-  } catch {
-    return [];
-  }
-};
-var collectGeneratedCFiles = (FS, cacheDir = NIM_CACHE_DIR) => listCache(FS, cacheDir).filter((name) => C_FILE.test(name)).sort().map((name) => ({ name, content: FS.readFile(`${cacheDir}/${name}`, { encoding: "utf8" }) }));
-var clearNimCache = (FS, cacheDir = NIM_CACHE_DIR) => {
-  for (const name of listCache(FS, cacheDir)) {
-    try {
-      FS.unlink(`${cacheDir}/${name}`);
-    } catch {
-    }
-  }
-  try {
-    FS.unlink(NIM_USER_FILE);
-  } catch {
-  }
-};
-var injectScript = (src) => new Promise((resolve, reject) => {
-  const script = document.createElement("script");
-  script.src = src;
-  script.onload = () => resolve();
-  script.onerror = () => reject(new Error(`Failed to load ${src}`));
-  document.head.appendChild(script);
-});
-var compilerPromise = null;
-function loadNimCompiler(options) {
-  if (!compilerPromise) {
-    compilerPromise = createNimCompiler(options).catch((error) => {
-      compilerPromise = null;
-      throw error;
-    });
-  }
-  return compilerPromise;
-}
-async function createNimCompiler({ baseUrl, onLog = () => {
-}, onStatus = () => {
-} }) {
-  const base = new URL(baseUrl, document.baseURI);
-  let settle;
-  const ready = new Promise((resolve, reject) => {
-    settle = { resolve, reject };
-  });
-  globalThis.Nim = {
-    locateFile: (file) => new URL(file, base).href,
-    noInitialRun: true,
-    print: (text) => onLog(text, "stdout"),
-    printErr: (text) => onLog(text, "stderr"),
-    quit: (_status, toThrow) => {
-      throw toThrow;
-    },
-    onRuntimeInitialized: () => settle.resolve(),
-    onAbort: (what) => settle.reject(new Error(`Nim compiler aborted: ${what}`))
-  };
-  onStatus("loading the Nim compiler\u2026");
-  await injectScript(new URL("nim-bundle.js", base).href);
-  await ready;
-  const FS = globalThis.FS;
-  const { callMain } = globalThis;
-  return {
-    FS,
-    /** Compile Nim source to the C files the `c` backend emitted. */
-    compile(source) {
-      clearNimCache(FS);
-      globalThis.__NIM_USER_CODE__ = source;
-      globalThis.__NIM_USER_CODE_PENDING__ = source;
-      let exitCode;
-      try {
-        exitCode = callMain([...NIM_COMPILE_ARGS]);
-      } catch (error) {
-        exitCode = `threw: ${error?.message ?? error}`;
-      }
-      const files = collectGeneratedCFiles(FS);
-      return {
-        files,
-        exitCode,
-        // Both, because a successful compile that emitted nothing would still be a failure here.
-        ok: exitCode === 0 && files.length > 0
-      };
-    }
-  };
-}
-
 // node_modules/@wasm-idle/llvm-core/dist/clang/src/types.js
 function resolveDebugMode(options) {
   if (options.debugMode !== void 0) {
@@ -10426,14 +10324,249 @@ var makeStdin = (input) => {
   };
 };
 
+// src/nim-compiler.js
+var NIM_CACHE_DIR = "/tmp/nimcache";
+var NIM_USER_FILE = "/tmp/user.nim";
+var NIM_OUTPUT_FILES = [NIM_USER_FILE, "/tmp/user", "/tmp/user.js"];
+var COMMON_ARGS = Object.freeze([
+  "--hints:off",
+  "-d:release",
+  `--nimcache:${NIM_CACHE_DIR}`,
+  "--path:/lib/pure",
+  "--path:/lib/pure/collections",
+  "--path:/lib/core"
+]);
+var NIM_C_COMPILE_ARGS = Object.freeze([
+  "c",
+  ...COMMON_ARGS,
+  "-d:useMalloc",
+  "--compileOnly",
+  "-o:/tmp/user",
+  NIM_USER_FILE
+]);
+var NIM_JS_COMPILE_ARGS = Object.freeze(["js", ...COMMON_ARGS, "-o:/tmp/user.js", NIM_USER_FILE]);
+var C_FILE = /\.(?:c|cpp)$/;
+var listCache = (FS, cacheDir) => {
+  try {
+    return FS.readdir(cacheDir).filter((name) => name !== "." && name !== "..");
+  } catch {
+    return [];
+  }
+};
+var collectGeneratedCFiles = (FS, cacheDir = NIM_CACHE_DIR) => listCache(FS, cacheDir).filter((name) => C_FILE.test(name)).sort().map((name) => ({ name, content: FS.readFile(`${cacheDir}/${name}`, { encoding: "utf8" }) }));
+var clearNimCache = (FS, cacheDir = NIM_CACHE_DIR) => {
+  for (const name of listCache(FS, cacheDir)) {
+    try {
+      FS.unlink(`${cacheDir}/${name}`);
+    } catch {
+    }
+  }
+  for (const path of NIM_OUTPUT_FILES) {
+    try {
+      FS.unlink(path);
+    } catch {
+    }
+  }
+};
+var injectScript = (src) => new Promise((resolve, reject) => {
+  const script = document.createElement("script");
+  script.src = src;
+  script.onload = () => resolve();
+  script.onerror = () => reject(new Error(`Failed to load ${src}`));
+  document.head.appendChild(script);
+});
+var compilerPromise = null;
+function loadNimCompiler(options) {
+  if (!compilerPromise) {
+    compilerPromise = createNimCompiler(options).catch((error) => {
+      compilerPromise = null;
+      throw error;
+    });
+  }
+  return compilerPromise;
+}
+async function createNimCompiler({ baseUrl, onLog = () => {
+}, onStatus = () => {
+} }) {
+  const base = new URL(baseUrl, document.baseURI);
+  let settle;
+  const ready = new Promise((resolve, reject) => {
+    settle = { resolve, reject };
+  });
+  globalThis.Nim = {
+    locateFile: (file) => new URL(file, base).href,
+    noInitialRun: true,
+    print: (text) => onLog(text, "stdout"),
+    printErr: (text) => onLog(text, "stderr"),
+    quit: (_status, toThrow) => {
+      throw toThrow;
+    },
+    onRuntimeInitialized: () => settle.resolve(),
+    onAbort: (what) => settle.reject(new Error(`Nim compiler aborted: ${what}`))
+  };
+  onStatus("loading the Nim compiler\u2026");
+  await injectScript(new URL("nim-bundle.js", base).href);
+  await ready;
+  const FS = globalThis.FS;
+  const { callMain } = globalThis;
+  const compile2 = (nimSource, args) => {
+    clearNimCache(FS);
+    globalThis.__NIM_USER_CODE__ = nimSource;
+    globalThis.__NIM_USER_CODE_PENDING__ = nimSource;
+    try {
+      return callMain([...args]);
+    } catch (error) {
+      return `threw: ${error?.message ?? error}`;
+    }
+  };
+  return {
+    FS,
+    /** Compile Nim source to the C files the `c` backend emitted, one per module. */
+    compileToC(nimSource) {
+      const exitCode = compile2(nimSource, NIM_C_COMPILE_ARGS);
+      const files = collectGeneratedCFiles(FS);
+      return { files, exitCode, ok: exitCode === 0 && files.length > 0 };
+    },
+    /** Compile Nim source to the single JavaScript file the `js` backend emitted. */
+    compileToJs(nimSource) {
+      const exitCode = compile2(nimSource, NIM_JS_COMPILE_ARGS);
+      let js = "";
+      try {
+        js = FS.readFile("/tmp/user.js", { encoding: "utf8" });
+      } catch {
+      }
+      return { js, exitCode, ok: exitCode === 0 && js.length > 0 };
+    }
+  };
+}
+
+// src/nim-js-runtime.js
+var BOOTSTRAP = `<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body>
+<script>
+(function () {
+  var SOURCE = 'nim-playground';
+  var send = function (kind, text) {
+    parent.postMessage({ source: SOURCE, kind: kind, text: text }, '*');
+  };
+  var format = function (values) {
+    return Array.prototype.map
+      .call(values, function (value) {
+        if (typeof value === 'string') return value;
+        try {
+          return JSON.stringify(value);
+        } catch (error) {
+          return String(value);
+        }
+      })
+      .join(' ');
+  };
+
+  // Nim's runtime writes to stdout through console.log and to stderr through console.error, so these
+  // are the two that matter; the rest are routed to stderr so nothing is silently lost.
+  console.log = function () { send('out', format(arguments)); };
+  console.info = console.log;
+  console.debug = console.log;
+  console.warn = function () { send('err', format(arguments)); };
+  console.error = function () { send('err', format(arguments)); };
+
+  window.onerror = function (message, source, line) {
+    send('err', String(message) + ' (line ' + line + ')');
+    return true;
+  };
+
+  window.addEventListener('message', function (event) {
+    var data = event.data;
+    if (!data || data.source !== SOURCE || data.kind !== 'run') return;
+    try {
+      var script = document.createElement('script');
+      // Appending the element is what runs it, and it runs synchronously, so the program has finished
+      // by the time the next line reports it.
+      script.textContent = data.text;
+      document.body.appendChild(script);
+    } catch (error) {
+      send('err', 'Error: ' + (error && error.message ? error.message : error));
+    }
+    send('done', '');
+  });
+
+  send('ready', '');
+})();
+<\/script>
+</body>
+</html>
+`;
+var SOURCE = "nim-playground";
+function runProgram(js, { timeoutMs = 15e3 } = {}) {
+  return new Promise((resolve) => {
+    const frame = document.createElement("iframe");
+    frame.setAttribute("sandbox", "allow-scripts");
+    frame.setAttribute("title", "Nim program output");
+    frame.style.display = "none";
+    frame.srcdoc = BOOTSTRAP;
+    const stdout = [];
+    const stderr = [];
+    const order = [];
+    let settled = false;
+    const finish = (failed) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      window.removeEventListener("message", onMessage);
+      frame.remove();
+      resolve({
+        stdout: stdout.join("\n"),
+        stderr: stderr.join("\n"),
+        output: order.join("\n"),
+        failed
+      });
+    };
+    const timer = setTimeout(() => {
+      stderr.push(`Timed out after ${timeoutMs}ms waiting for the program to finish.`);
+      order.push(`Timed out after ${timeoutMs}ms waiting for the program to finish.`);
+      finish(true);
+    }, timeoutMs);
+    const onMessage = (event) => {
+      const data = event.data;
+      if (!data || data.source !== SOURCE || event.source !== frame.contentWindow) return;
+      if (data.kind === "ready") {
+        frame.contentWindow.postMessage({ source: SOURCE, kind: "run", text: js }, "*");
+        return;
+      }
+      if (data.kind === "out") {
+        stdout.push(data.text);
+        order.push(data.text);
+        return;
+      }
+      if (data.kind === "err") {
+        stderr.push(data.text);
+        order.push(data.text);
+        return;
+      }
+      if (data.kind === "done") finish(false);
+    };
+    window.addEventListener("message", onMessage);
+    document.body.appendChild(frame);
+  });
+}
+
 // src/run-nim.js
+var BACKENDS = Object.freeze({ JS: "nim", WASM: "nim-wasm" });
 var ANSI = /\u001b\[[0-9;]*[A-Za-z]/g;
 var stripAnsi = (text) => String(text ?? "").replace(ANSI, "");
 var unitPath = (index) => `nim/unit-${String(index).padStart(3, "0")}.c`;
-function createRunner({ nimBaseUrl, clangBaseUrl, onStatus = () => {
-}, onCompilerLog = () => {
-}, onProgress = () => {
-} }) {
+function createRunner({
+  nimBaseUrl,
+  clangBaseUrl,
+  onStatus = () => {
+  },
+  onCompilerLog = () => {
+  },
+  onProgress = () => {
+  }
+}) {
   let nimbasePromise = null;
   let diagnostics = [];
   const nimLog = (text) => {
@@ -10452,28 +10585,50 @@ function createRunner({ nimBaseUrl, clangBaseUrl, onStatus = () => {
     return nimbasePromise;
   };
   const compiler = () => loadNimCompiler({ baseUrl: nimBaseUrl, onLog: nimLog, onStatus });
+  const nimFailure = ({ backend, started, nimMs, cFiles = 0 }) => ({
+    ok: false,
+    phase: "nim",
+    backend,
+    errors: diagnostics.length ? diagnostics : ["The Nim compiler produced no output."],
+    output: diagnostics.join("\n"),
+    exitCode: null,
+    cFiles,
+    nimMs,
+    totalMs: performance.now() - started
+  });
   return {
-    /** Load both toolchains. Optional: `run` does it on first use. */
-    async warmup() {
-      await Promise.all([compiler(), loadClangRuntime({ baseUrl: clangBaseUrl, onProgress, onLog: onCompilerLog })]);
-    },
-    async run(source, { args = [], stdin = "" } = {}) {
+    async run(source, { backend = BACKENDS.WASM, args = [], stdin = "" } = {}) {
       const started = performance.now();
       diagnostics = [];
-      onStatus("compiling Nim to C\u2026");
+      const useJs = backend === BACKENDS.JS;
+      onStatus(`compiling Nim to ${useJs ? "JavaScript" : "C"}\u2026`);
       const nim = await compiler();
       const nimStarted = performance.now();
-      const generated = nim.compile(source);
+      const generated = useJs ? nim.compileToJs(source) : nim.compileToC(source);
       const nimMs = performance.now() - nimStarted;
       if (!generated.ok) {
+        return nimFailure({ backend, started, nimMs, cFiles: generated.files?.length ?? 0 });
+      }
+      if (useJs) {
+        onStatus("running\u2026");
+        const runStarted2 = performance.now();
+        const ran = await runProgram(generated.js);
         return {
-          ok: false,
-          phase: "nim",
-          errors: diagnostics.length ? diagnostics : ["The Nim compiler produced no C output."],
-          output: diagnostics.join("\n"),
-          exitCode: null,
-          cFiles: 0,
-          nimMs
+          ok: !ran.failed,
+          phase: "run",
+          backend,
+          stdout: ran.stdout,
+          stderr: ran.stderr,
+          output: ran.output,
+          exitCode: ran.failed ? 1 : 0,
+          // The program is one readable file, which is worth showing; the C route's output is
+          // eight mangled translation units, which is not.
+          compiledCode: generated.js,
+          jsBytes: generated.js.length,
+          nimMs,
+          compileMs: 0,
+          runMs: performance.now() - runStarted2,
+          totalMs: performance.now() - started
         };
       }
       const translationUnits = generated.files.map((file, index) => ({
@@ -10498,12 +10653,14 @@ function createRunner({ nimBaseUrl, clangBaseUrl, onStatus = () => {
         return {
           ok: false,
           phase: "clang",
+          backend,
           errors: [stripAnsi(error?.message ?? error)],
           output: "",
           exitCode: null,
           cFiles: translationUnits.length,
           nimMs,
-          compileMs: performance.now() - compileStarted
+          compileMs: performance.now() - compileStarted,
+          totalMs: performance.now() - started
         };
       }
       const compileMs = performance.now() - compileStarted;
@@ -10528,6 +10685,7 @@ function createRunner({ nimBaseUrl, clangBaseUrl, onStatus = () => {
       return {
         ok: result.exitCode === 0,
         phase: "run",
+        backend,
         stdout: stdout.join(""),
         stderr: stderr.join(""),
         // What a terminal would have shown: both streams in the order the program wrote them.
@@ -10546,8 +10704,7 @@ function createRunner({ nimBaseUrl, clangBaseUrl, onStatus = () => {
 }
 
 // src/samples.js
-var SAMPLES = Object.freeze({
-  "Hello, factorial, and a sorted seq": `import strformat, algorithm
+var SHARED = `import strformat, algorithm
 
 let name = "browser"
 echo "Hello, ", name, "!"
@@ -10561,8 +10718,14 @@ echo "sorted: ", xs.sorted
 proc factorial(n: int): int =
   if n <= 1: 1 else: n * factorial(n-1)
 echo "5! = ", factorial(5)
-`,
-  "Primes with a set and a proc": `import strutils, sequtils
+`;
+var LANGUAGES = Object.freeze({
+  "nim-wasm": {
+    label: "Nim (WebAssembly)",
+    description: "Compiled to C, then to WebAssembly with the Clang toolchain. Real Nim semantics.",
+    samples: {
+      "Hello, factorial, and a sorted seq": SHARED,
+      "Primes with a set and a proc": `import strutils, sequtils
 
 proc primesBelow(limit: int): seq[int] =
   result = @[]
@@ -10579,7 +10742,7 @@ let primes = primesBelow(50)
 echo "found ", primes.len, " primes below 50"
 echo primes.mapIt($it).join(", ")
 `,
-  "Reading a command-line argument": `import os, strutils
+      "Reading a command-line argument": `import os, strutils
 
 let args = commandLineParams()
 if args.len == 0:
@@ -10588,16 +10751,47 @@ else:
   for arg in args:
     echo arg.toUpperAscii()
 `,
-  "A runtime error, to see how it is reported": `proc divide(a, b: int): int = a div b
+      "A runtime error, to see how it is reported": `proc divide(a, b: int): int = a div b
 
 echo "about to divide by zero"
 echo divide(10, 0)
 echo "unreachable"
 `
+    }
+  },
+  nim: {
+    label: "Nim (JavaScript)",
+    description: "Compiled to JavaScript and run in a sandboxed frame. Can reach the page.",
+    samples: {
+      "Hello, factorial, and a sorted seq": SHARED,
+      "Calling into JavaScript": `# The JavaScript backend compiles to JavaScript, so a program can call into it directly - this is
+# the JS backend's answer to \`importc\`. It also runs in a real document, which the WebAssembly
+# backend has no access to.
+proc setBody(html: cstring) {.importjs: "document.body.innerHTML = #".}
+proc bodyHtmlAfter(prefix: cstring): cstring {.importjs: "# + document.body.innerHTML".}
+proc toJson(value: cstring): cstring {.importjs: "JSON.stringify(#)".}
+
+setBody("<p>Written by Nim, rendered by the browser</p>")
+# \`importjs\` substitutes its arguments into the pattern, so a reader has to take one even when it has
+# nothing to add - hence the empty prefix.
+echo "the frame's body now holds: ", bodyHtmlAfter("")
+echo "and JSON.stringify, from Nim: ", toJson("hello")
+`,
+      "A runtime error, to see how it is reported": `proc divide(a, b: int): int = a div b
+
+echo "about to divide by zero"
+echo divide(10, 0)
+echo "unreachable"
+`
+    }
+  }
 });
-var DEFAULT_SAMPLE = Object.keys(SAMPLES)[0];
+var DEFAULT_LANGUAGE = "nim-wasm";
+var samplesFor = (language) => LANGUAGES[language].samples;
 export {
-  DEFAULT_SAMPLE,
-  SAMPLES,
-  createRunner
+  BACKENDS,
+  DEFAULT_LANGUAGE,
+  LANGUAGES,
+  createRunner,
+  samplesFor
 };

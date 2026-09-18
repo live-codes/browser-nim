@@ -135,9 +135,9 @@
 <header>
   <h1>Nim in the browser</h1>
   <div class="sub">
-    Nim 2.2.4 compiles to C, Clang&nbsp;22 compiles that to WebAssembly, and the result runs here.
-    Nothing is sent to a server. The C toolchain is the same one LiveCodes uses for C/C++ and
-    Objective-C.
+    Nim 2.2.4 runs here as WebAssembly, and compiles your program either to C — which Clang&nbsp;22
+    turns into WebAssembly, using the same toolchain LiveCodes uses for C/C++ and Objective-C — or
+    straight to JavaScript, which runs in a sandboxed frame. Nothing is sent to a server.
   </div>
 </header>
 
@@ -146,6 +146,7 @@
     <h2>Nim source</h2>
     <div class="row">
       <button id="run">Run</button>
+      <select id="language" aria-label="Target"></select>
       <select id="samples" aria-label="Sample programs"></select>
       <span id="statusText"></span>
     </div>
@@ -161,6 +162,10 @@
     </div>
     <pre id="output"><span class="empty">Run something.</span></pre>
     <div id="meta" class="meta"></div>
+    <details id="codeWrap" hidden>
+      <summary id="codeSummary">Compiled JavaScript</summary>
+      <pre id="compiledCode"></pre>
+    </details>
     <details id="logWrap" hidden>
       <summary>Build log</summary>
       <pre id="log"></pre>
@@ -173,31 +178,50 @@
 </main>
 
 <script type="module">
-  import { createRunner, DEFAULT_SAMPLE, SAMPLES } from './vendor/nim-playground.js';
+  import { createRunner, DEFAULT_LANGUAGE, LANGUAGES, samplesFor } from './vendor/nim-playground.js';
 
   const $ = (id) => document.getElementById(id);
   const codeEl = $('code');
   const outputEl = $('output');
   const logEl = $('log');
   const errorsEl = $('errors');
+  const compiledEl = $('compiledCode');
   const metaEl = $('meta');
   const statusEl = $('status');
   const statusTextEl = $('statusText');
   const progressEl = $('progress');
   const runButton = $('run');
-
+  const languagePicker = $('language');
   const samplePicker = $('samples');
-  for (const label of Object.keys(SAMPLES)) {
+
+  for (const [id, language] of Object.entries(LANGUAGES)) {
     const option = document.createElement('option');
-    option.value = label;
-    option.textContent = label;
-    samplePicker.appendChild(option);
+    option.value = id;
+    option.textContent = language.label;
+    option.title = language.description;
+    languagePicker.appendChild(option);
   }
-  const loadSample = (label) => {
-    codeEl.value = SAMPLES[label];
+  languagePicker.value = DEFAULT_LANGUAGE;
+
+  // The two languages are not variations of each other, and their sample sets share only the programs
+  // both can run, so changing the target reloads the list.
+  const fillSamples = () => {
+    const samples = samplesFor(languagePicker.value);
+    samplePicker.innerHTML = '';
+    for (const label of Object.keys(samples)) {
+      const option = document.createElement('option');
+      option.value = label;
+      option.textContent = label;
+      samplePicker.appendChild(option);
+    }
+    codeEl.value = samples[samplePicker.value];
   };
-  samplePicker.addEventListener('change', () => loadSample(samplePicker.value));
-  loadSample(DEFAULT_SAMPLE);
+
+  samplePicker.addEventListener('change', () => {
+    codeEl.value = samplesFor(languagePicker.value)[samplePicker.value];
+  });
+  languagePicker.addEventListener('change', fillSamples);
+  fillSamples();
 
   const setStatus = (text, cls = '') => {
     statusEl.textContent = text;
@@ -235,11 +259,13 @@
     errorsEl.textContent = '';
     $('logWrap').hidden = true;
     $('errorWrap').hidden = true;
+    compiledEl.textContent = '';
+    $('codeWrap').hidden = true;
     metaEl.textContent = '';
     setStatus('working…', 'busy');
 
     try {
-      const result = await runner.run(codeEl.value);
+      const result = await runner.run(codeEl.value, { backend: languagePicker.value });
 
       if (result.errors?.length) {
         errorsEl.textContent = result.errors.join('\n');
@@ -254,13 +280,22 @@
         outputEl.innerHTML = '<span class="empty">(no output)</span>';
       }
 
+      // The JavaScript backend emits one readable file, so it is worth showing. The C backend's
+      // output is eight mangled translation units, which is not.
+      if (result.compiledCode) {
+        compiledEl.textContent = result.compiledCode;
+        $('codeWrap').hidden = false;
+      }
+
       if (result.phase === 'run') {
         setStatus(result.ok ? 'done' : `exit code ${result.exitCode}`, result.ok ? 'ok' : 'err');
+        const artifact = result.artifactBytes
+          ? `${result.cFiles} C files · ${(result.artifactBytes / 1024).toFixed(0)} KB wasm`
+          : `${(result.jsBytes / 1024).toFixed(0)} KB JavaScript`;
         metaEl.textContent = [
-          `${result.cFiles} C files`,
-          result.artifactBytes ? `${(result.artifactBytes / 1024).toFixed(0)} KB wasm` : null,
+          artifact,
           `nim ${Math.round(result.nimMs)}ms`,
-          `clang ${Math.round(result.compileMs)}ms`,
+          result.compileMs ? `clang ${Math.round(result.compileMs)}ms` : null,
           `run ${Math.round(result.runMs)}ms`,
           `total ${(result.totalMs / 1000).toFixed(1)}s`
         ]

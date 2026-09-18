@@ -1,14 +1,22 @@
-// The whole pipeline behind one call: Nim source in, program output out.
+// The two pipelines behind one call: Nim source in, program output out.
 //
-//   Nim source
-//     -> nim.wasm        (the Nim 2.2.4 compiler, in the browser)      -> N x .c
-//     -> clang.wasm      (@live-codes/clang-wasm's toolchain, via the runtime) -> N x .o
-//     -> lld.wasm        (same toolchain)                              -> one .wasm
-//     -> WebAssembly.instantiate                                        -> output
+//   `nim` — the JavaScript backend
+//     Nim source -> nim.wasm -> one .js -> a sandboxed frame
+//
+//   `nim-wasm` — the C backend
+//     Nim source -> nim.wasm -> N x .c -> clang -> N x .o -> lld -> one .wasm
+//
+// Neither is a subset of the other, which is why both are offered. The first is one compile and no
+// toolchain at all, and it is the only one that can touch a DOM. The second is a real compiler, linker
+// and runtime, so Nim's semantics hold — the JS backend maps Nim onto JavaScript, where 64-bit
+// integers are not exact and C interop does not exist.
 //
 // Nothing here needs a server, and nothing is sent anywhere.
-import { loadNimCompiler } from './nim-to-c.js';
 import { compileTranslationUnits, loadClangRuntime, runArtifact } from './clang-build.js';
+import { loadNimCompiler } from './nim-compiler.js';
+import { runProgram } from './nim-js-runtime.js';
+
+export const BACKENDS = Object.freeze({ JS: 'nim', WASM: 'nim-wasm' });
 
 const ANSI = /\u001b\[[0-9;]*[A-Za-z]/g;
 const stripAnsi = (text) => String(text ?? '').replace(ANSI, '');
@@ -18,7 +26,13 @@ const stripAnsi = (text) => String(text ?? '').replace(ANSI, '');
 // they are renamed to something plain. Nothing in the generated C refers to its own filename.
 const unitPath = (index) => `nim/unit-${String(index).padStart(3, '0')}.c`;
 
-export function createRunner({ nimBaseUrl, clangBaseUrl, onStatus = () => {}, onCompilerLog = () => {}, onProgress = () => {} }) {
+export function createRunner({
+	nimBaseUrl,
+	clangBaseUrl,
+	onStatus = () => {},
+	onCompilerLog = () => {},
+	onProgress = () => {}
+}) {
 	let nimbasePromise = null;
 
 	// The compiler's diagnostics and its progress chatter both come out of the bundle's `printErr`, so
@@ -43,31 +57,54 @@ export function createRunner({ nimBaseUrl, clangBaseUrl, onStatus = () => {}, on
 
 	const compiler = () => loadNimCompiler({ baseUrl: nimBaseUrl, onLog: nimLog, onStatus });
 
-	return {
-		/** Load both toolchains. Optional: `run` does it on first use. */
-		async warmup() {
-			await Promise.all([compiler(), loadClangRuntime({ baseUrl: clangBaseUrl, onProgress, onLog: onCompilerLog })]);
-		},
+	const nimFailure = ({ backend, started, nimMs, cFiles = 0 }) => ({
+		ok: false,
+		phase: 'nim',
+		backend,
+		errors: diagnostics.length ? diagnostics : ['The Nim compiler produced no output.'],
+		output: diagnostics.join('\n'),
+		exitCode: null,
+		cFiles,
+		nimMs,
+		totalMs: performance.now() - started
+	});
 
-		async run(source, { args = [], stdin = '' } = {}) {
+	return {
+		async run(source, { backend = BACKENDS.WASM, args = [], stdin = '' } = {}) {
 			const started = performance.now();
 			diagnostics = [];
+			const useJs = backend === BACKENDS.JS;
 
-			onStatus('compiling Nim to C…');
+			onStatus(`compiling Nim to ${useJs ? 'JavaScript' : 'C'}…`);
 			const nim = await compiler();
 			const nimStarted = performance.now();
-			const generated = nim.compile(source);
+			const generated = useJs ? nim.compileToJs(source) : nim.compileToC(source);
 			const nimMs = performance.now() - nimStarted;
 
 			if (!generated.ok) {
+				return nimFailure({ backend, started, nimMs, cFiles: generated.files?.length ?? 0 });
+			}
+
+			if (useJs) {
+				onStatus('running…');
+				const runStarted = performance.now();
+				const ran = await runProgram(generated.js);
 				return {
-					ok: false,
-					phase: 'nim',
-					errors: diagnostics.length ? diagnostics : ['The Nim compiler produced no C output.'],
-					output: diagnostics.join('\n'),
-					exitCode: null,
-					cFiles: 0,
-					nimMs
+					ok: !ran.failed,
+					phase: 'run',
+					backend,
+					stdout: ran.stdout,
+					stderr: ran.stderr,
+					output: ran.output,
+					exitCode: ran.failed ? 1 : 0,
+					// The program is one readable file, which is worth showing; the C route's output is
+					// eight mangled translation units, which is not.
+					compiledCode: generated.js,
+					jsBytes: generated.js.length,
+					nimMs,
+					compileMs: 0,
+					runMs: performance.now() - runStarted,
+					totalMs: performance.now() - started
 				};
 			}
 
@@ -95,12 +132,14 @@ export function createRunner({ nimBaseUrl, clangBaseUrl, onStatus = () => {}, on
 				return {
 					ok: false,
 					phase: 'clang',
+					backend,
 					errors: [stripAnsi(error?.message ?? error)],
 					output: '',
 					exitCode: null,
 					cFiles: translationUnits.length,
 					nimMs,
-					compileMs: performance.now() - compileStarted
+					compileMs: performance.now() - compileStarted,
+					totalMs: performance.now() - started
 				};
 			}
 			const compileMs = performance.now() - compileStarted;
@@ -127,6 +166,7 @@ export function createRunner({ nimBaseUrl, clangBaseUrl, onStatus = () => {}, on
 			return {
 				ok: result.exitCode === 0,
 				phase: 'run',
+				backend,
 				stdout: stdout.join(''),
 				stderr: stderr.join(''),
 				// What a terminal would have shown: both streams in the order the program wrote them.

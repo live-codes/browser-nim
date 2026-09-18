@@ -1,17 +1,34 @@
-// Step 1 of the pipeline: Nim source -> C translation units, using the Nim compiler compiled to wasm.
+// Step 1 of both pipelines: load the Nim compiler, and drive it.
 //
 // `nim-bundle.js` is a classic Emscripten build, so it is loaded as a script rather than imported and
 // it publishes `FS` and `callMain` as globals. It also reads a global `Nim` object as its Emscripten
 // `Module`, which is how the output streams and the load hook get wired up — that has to happen
 // before the script is added, because `Module` is captured at evaluation time.
 //
-// `compile()` returns the generated C; compiling it is the next step's job.
+// One instance serves both backends: the compiler is the same program, and which output it produces is
+// decided by the command it is given. They are not interchangeable, though — see `src/samples.js` for
+// what each can run.
 
 const NIM_CACHE_DIR = '/tmp/nimcache';
 const NIM_USER_FILE = '/tmp/user.nim';
 
-// An explicit cache directory rather than Nim's default under `$HOME`, so the path the generated C is
-// read back from does not depend on how the compiler was told to set up its home directory.
+// Every path the compiler is told to write, so a failed compile can never be mistaken for the
+// previous successful one. `-o` is where the program goes; the cache is the C backend's per-module
+// output and the compiler's own build record.
+const NIM_OUTPUT_FILES = [NIM_USER_FILE, '/tmp/user', '/tmp/user.js'];
+
+// Shared by both backends. Order matters: anything after the source path is taken as the program's
+// arguments, so every flag has to come before it.
+const COMMON_ARGS = Object.freeze([
+	'--hints:off',
+	'-d:release',
+	`--nimcache:${NIM_CACHE_DIR}`,
+	'--path:/lib/pure',
+	'--path:/lib/pure/collections',
+	'--path:/lib/core'
+]);
+
+// The `c` backend, for the WebAssembly route.
 //
 // `-d:useMalloc` is not optional. Nim's default allocator grows memory with mmap, and the Clang
 // runtime's link line does not pull in wasi's mmap emulation, so the default allocator fails to link.
@@ -24,21 +41,22 @@ const NIM_USER_FILE = '/tmp/user.nim';
 // `/home/web_user/.cache/nim/...` and failing there instead. With it the step is a clean exit 0, and
 // it is roughly three times quicker.
 //
-// Order matters: anything after the source path is taken as the program's arguments, so every flag
-// has to come before it.
-export const NIM_COMPILE_ARGS = Object.freeze([
+// What it emits is one `.c` per Nim module, which is the next step's input.
+export const NIM_C_COMPILE_ARGS = Object.freeze([
 	'c',
-	'--hints:off',
-	'-d:release',
+	...COMMON_ARGS,
 	'-d:useMalloc',
 	'--compileOnly',
-	`--nimcache:${NIM_CACHE_DIR}`,
-	'--path:/lib/pure',
-	'--path:/lib/pure/collections',
-	'--path:/lib/core',
 	'-o:/tmp/user',
-	'/tmp/user.nim'
+	NIM_USER_FILE
 ]);
+
+// The `js` backend, for the JavaScript route.
+//
+// None of the C route's accommodations apply: there is no allocator to choose, no C compiler to stop
+// before, and no link step. What it emits is one self-contained `.js` file, which the page can run as
+// it stands.
+export const NIM_JS_COMPILE_ARGS = Object.freeze(['js', ...COMMON_ARGS, '-o:/tmp/user.js', NIM_USER_FILE]);
 
 const C_FILE = /\.(?:c|cpp)$/;
 
@@ -63,7 +81,7 @@ export const collectGeneratedCFiles = (FS, cacheDir = NIM_CACHE_DIR) =>
 		.sort()
 		.map((name) => ({ name, content: FS.readFile(`${cacheDir}/${name}`, { encoding: 'utf8' }) }));
 
-/** Drop the previous program's generated C and source, so a build never links a stale unit. */
+/** Drop the previous program's output and cache, so a build never links or runs a stale artifact. */
 export const clearNimCache = (FS, cacheDir = NIM_CACHE_DIR) => {
 	for (const name of listCache(FS, cacheDir)) {
 		try {
@@ -72,10 +90,12 @@ export const clearNimCache = (FS, cacheDir = NIM_CACHE_DIR) => {
 			// A cache entry we cannot remove is not worth failing the compile over.
 		}
 	}
-	try {
-		FS.unlink(NIM_USER_FILE);
-	} catch {
-		// Not written yet on a first run.
+	for (const path of NIM_OUTPUT_FILES) {
+		try {
+			FS.unlink(path);
+		} catch {
+			// Nothing there from a previous run.
+		}
 	}
 };
 
@@ -139,32 +159,42 @@ async function createNimCompiler({ baseUrl, onLog = () => {}, onStatus = () => {
 	const FS = globalThis.FS;
 	const { callMain } = globalThis;
 
+	// The bundle writes whichever of these is pending to /tmp/user.nim the first time the compiler
+	// touches that path. `__NIM_USER_CODE__` also decides whether it auto-runs.
+	const compile = (nimSource, args) => {
+		clearNimCache(FS);
+		globalThis.__NIM_USER_CODE__ = nimSource;
+		globalThis.__NIM_USER_CODE_PENDING__ = nimSource;
+
+		try {
+			return callMain([...args]);
+		} catch (error) {
+			return `threw: ${error?.message ?? error}`;
+		}
+	};
+
 	return {
 		FS,
 
-		/** Compile Nim source to the C files the `c` backend emitted. */
-		compile(source) {
-			clearNimCache(FS);
-
-			// The bundle writes whichever of these is pending to /tmp/user.nim the first time the
-			// compiler touches that path. `__NIM_USER_CODE__` also decides whether it auto-runs.
-			globalThis.__NIM_USER_CODE__ = source;
-			globalThis.__NIM_USER_CODE_PENDING__ = source;
-
-			let exitCode;
-			try {
-				exitCode = callMain([...NIM_COMPILE_ARGS]);
-			} catch (error) {
-				exitCode = `threw: ${error?.message ?? error}`;
-			}
-
+		/** Compile Nim source to the C files the `c` backend emitted, one per module. */
+		compileToC(nimSource) {
+			const exitCode = compile(nimSource, NIM_C_COMPILE_ARGS);
 			const files = collectGeneratedCFiles(FS);
-			return {
-				files,
-				exitCode,
-				// Both, because a successful compile that emitted nothing would still be a failure here.
-				ok: exitCode === 0 && files.length > 0
-			};
+			// Both, because a successful compile that emitted nothing would still be a failure here.
+			return { files, exitCode, ok: exitCode === 0 && files.length > 0 };
+		},
+
+		/** Compile Nim source to the single JavaScript file the `js` backend emitted. */
+		compileToJs(nimSource) {
+			const exitCode = compile(nimSource, NIM_JS_COMPILE_ARGS);
+
+			let js = '';
+			try {
+				js = FS.readFile('/tmp/user.js', { encoding: 'utf8' });
+			} catch {
+				// Left empty; `ok` is false and the caller reports the diagnostics.
+			}
+			return { js, exitCode, ok: exitCode === 0 && js.length > 0 };
 		}
 	};
 }
