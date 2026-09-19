@@ -304,10 +304,15 @@ The `nim` target touches none of it: one compile, and a frame to run the result 
 
 ## Next steps
 
-1. **Build and pin `nim.wasm` in-house.** `npm run assets:nim` fetches a third-party prebuilt bundle
-   from someone's GitHub Pages. It works and is recorded in `asset-receipts.json`, but it should be
-   built from the Nim sources and pinned the way the Clang assets are, ideally as a versioned
-   `@live-codes` package. One compiler instance serves both targets, so that is one artifact to pin.
+1. **Build `nim.wasm` in-house.** It is pinned (`nim-assets.lock.json`) but still a third-party prebuilt
+   bundle, and building it here is not the one-command exercise the upstream README suggests. It needs
+   Emscripten, a Nim checkout at 2.2.4, and a two-stage build of the compiler for `--cpu:wasm32` — and
+   then the two patches that make the result usable in a browser at all, both of which are the upstream
+   project's own work: the standard library has to be embedded in the loader as a base64 map (337 files,
+   `/lib/system/jssys.nim` among them), because the wasm compiler has no real filesystem to read `/lib`
+   from, and the loader has to be patched with the hook that writes submitted source into that in-memory
+   filesystem — without it there is no way to hand the compiler a program. So this is a small build
+   pipeline to own, not a flag to add, which is why the pin came first.
 2. **Wire both into LiveCodes as separate language modules** — `nim` and `nim-wasm`, sharing one worker
    and one compiler instance, following the `lang-cpp-wasm-script.ts` shim. Not one language with a
    toggle: their sample sets, capabilities and error output differ, and a shared picker would have to
@@ -357,7 +362,9 @@ MIT for the code here, matching `@live-codes/clang-wasm` and the Nim standard li
 - `vendor/nim/nim.wasm`, `nim-bundle.js` — Nim 2.2.4 (MIT), built to wasm by the
   [Nim-WASM-Compiler](https://github.com/benagastov/Nim-WASM-Compiler) project, whose glue and patches
   are MIT. Its generated-C preparation is not used: the C is compiled as Nim emits it, apart from the
-  entry point.
+  entry point. `nim-assets.lock.json` pins the bytes to that project's commit `ca3471ae` and records
+  their SHA-256s; `npm run assets:nim` verifies against it and fails rather than re-pinning, and
+  `npm run assets:nim -- --update` is the deliberate way to move the pin.
 - `vendor/nim/nimbase.h` — Nim (MIT).
 - `vendor/clang/` — Clang and LLD (Apache-2.0 with the LLVM exception), memfs, the sysroot, and the
   GNUstep libobjc2 runtime (MIT), copied from `@live-codes/clang-wasm`. See that package's
