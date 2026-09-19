@@ -14,7 +14,8 @@
       "node": "./src/js-runtime.node.js",
       "browser": "./src/js-runtime.js",
       "default": "./src/js-runtime.js"
-    }
+    },
+    "./iife": "./dist/nim-wasm.global.js"
   },
   "bin": {
     "nim-wasm-copy-assets": "./bin/copy-assets.mjs"
@@ -22,6 +23,8 @@
   "files": [
     "src",
     "bin",
+    "scripts",
+    "dist",
     "assets",
     "THIRD-PARTY-NOTICES.md"
   ],
@@ -29,6 +32,7 @@
     "node": ">=20"
   },
   "scripts": {
+    "build:iife": "node scripts/build-iife.mjs",
     "test": "node --test \"test/*.test.mjs\""
   },
   "dependencies": {
