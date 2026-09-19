@@ -68,6 +68,8 @@
   }
   button:hover:not(:disabled) { background: #2ea043; }
   button:disabled { background: #21262d; color: var(--muted); cursor: not-allowed; }
+  button.secondary { background: #21262d; color: var(--fg); }
+  button.secondary:hover:not(:disabled) { background: #30363d; }
   select {
     background: var(--bg);
     color: var(--fg);
@@ -146,6 +148,7 @@
     <h2>Nim source</h2>
     <div class="row">
       <button id="run">Run</button>
+      <button id="stop" class="secondary" disabled>Stop</button>
       <select id="language" aria-label="Target"></select>
       <select id="samples" aria-label="Sample programs"></select>
       <span id="statusText"></span>
@@ -178,7 +181,7 @@
 </main>
 
 <script type="module">
-  import { createRunner, DEFAULT_LANGUAGE, LANGUAGES, samplesFor } from './vendor/nim-playground.js';
+  import { createPlayground, DEFAULT_LANGUAGE, LANGUAGES, samplesFor } from './vendor/nim-playground.js';
 
   const $ = (id) => document.getElementById(id);
   const codeEl = $('code');
@@ -191,6 +194,7 @@
   const statusTextEl = $('statusText');
   const progressEl = $('progress');
   const runButton = $('run');
+  const stopButton = $('stop');
   const languagePicker = $('language');
   const samplePicker = $('samples');
 
@@ -233,8 +237,9 @@
     logEl.textContent += text;
   };
 
-  const runner = createRunner({
-    // Both toolchains are served from this page's own origin by serve.mjs.
+  const playground = createPlayground({
+    // Both toolchains are served from this page's own origin by serve.mjs. The worker that compiles
+    // with them is built next to the page bundle.
     nimBaseUrl: './nim/',
     clangBaseUrl: './clang/',
     onStatus: (text) => {
@@ -252,6 +257,7 @@
     if (running) return;
     running = true;
     runButton.disabled = true;
+    stopButton.disabled = false;
     // Reset the panes, including the error styling a previous run's failure may have left behind.
     outputEl.className = '';
     outputEl.innerHTML = '<span class="empty">compiling…</span>';
@@ -265,7 +271,7 @@
     setStatus('working…', 'busy');
 
     try {
-      const result = await runner.run(codeEl.value, { backend: languagePicker.value });
+      const result = await playground.run(codeEl.value, { backend: languagePicker.value });
 
       if (result.errors?.length) {
         errorsEl.textContent = result.errors.join('\n');
@@ -301,6 +307,8 @@
         ]
           .filter(Boolean)
           .join(' · ');
+      } else if (result.phase === 'stopped') {
+        setStatus('stopped', 'err');
       } else {
         setStatus(`${result.phase} failed`, 'err');
       }
@@ -312,12 +320,15 @@
     } finally {
       running = false;
       runButton.disabled = false;
+      stopButton.disabled = true;
       progressEl.textContent = '';
       statusTextEl.textContent = '';
     }
   };
 
   runButton.addEventListener('click', run);
+  // Stopping resolves the run like any other result, so the button state is restored by `run` itself.
+  stopButton.addEventListener('click', () => playground.stop());
   codeEl.addEventListener('keydown', (event) => {
     if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
       event.preventDefault();

@@ -23,8 +23,8 @@ HTTP and needs a real origin — it is not a compilation server, and nothing but
 
 ## How it works
 
-Both targets start the same way: the Nim compiler, itself compiled to WebAssembly, runs in the page.
-Which output it produces is decided by the command it is given.
+Both targets start the same way: the Nim compiler, itself compiled to WebAssembly, runs — and which
+output it produces is decided by the command it is given.
 
 ```
 nim-wasm
@@ -35,15 +35,31 @@ nim
   your Nim code -> nim.wasm -> one 23 KB .js -> a sandboxed iframe -> output
 ```
 
+**All of that runs in a worker, except running the JavaScript target's program.** The Clang runtime
+blocks whatever thread it holds for the length of a compile, and the Nim compiler blocks too, so both
+happen off the page: the page stays responsive, and a build that will not finish can be stopped by
+discarding the worker. The JavaScript target's program is the exception because it needs a document —
+and a document is the reason to use that target — so it runs in a frame on the page, which also means a
+program of its own that loops forever still hangs the tab and no stop button can reach it.
+
 The modules, by stage:
 
 | File | Stage |
 | --- | --- |
+| `src/playground.js` | The page: owns the worker, and runs the JavaScript target's program |
+| `src/nim-worker.js` | The worker: receives a run, posts status, output and the result |
 | `src/nim-compiler.js` | Loads the Nim compiler and drives it, for either backend |
 | `src/clang-build.js` | C: compiles each translation unit and links them, then runs the module |
-| `src/nim-js-runtime.js` | JavaScript: runs the emitted program in a sandboxed frame |
+| `src/nim-js-runtime.js` | The frame the JavaScript target's program runs in |
 | `src/run-nim.js` | Wires the stages together behind `runner.run(source, { backend })` |
 | `src/wasi-signal-header.js` | The `<signal.h>` the pruned WASI sysroot does not have |
+
+`npm run bundle` produces two bundles, one per thread, and they are deliberately disjoint:
+
+| | | |
+| --- | --- | --- |
+| `vendor/nim-playground.js` | 9 KB | the page — it does *not* carry the Clang runtime |
+| `vendor/nim-worker.js` | 475 KB | the worker — carries the Clang runtime, fetched when the worker starts |
 
 ### What the JavaScript backend changes
 
@@ -215,6 +231,23 @@ compiler's output by overwriting `window.print`, but Emscripten binds its stream
 capture never sees anything. Setting a `Nim` module object before the script loads is what actually
 works — and it is how Nim's errors and warnings reach the diagnostics panel here.
 
+### 7. The Clang runtime leaves a `document` on the worker's global scope
+
+`@wasm-idle/llvm-core`'s `runtime.js` opens with:
+
+```js
+if (typeof globalThis.document === "undefined") {
+  globalThis.document = { querySelectorAll: (() => []) };
+}
+```
+
+so that its own code can run in a worker. But the stub has no `createElement`, which makes
+`typeof document` useless for telling a worker from a page — it says `object` in both, and a check on it
+sends the worker down the page's code path, failing on `document.createElement is not a function`. The
+discriminator that works is `typeof importScripts`, which is also the one that matters: the Emscripten
+bundle looks for `importScripts` to recognise a worker at all, and without it it initialises for no
+environment. That is why the worker here is a classic worker rather than a module worker.
+
 ## Verification
 
 ```bash
@@ -233,6 +266,12 @@ npm test    # node --test test/*.test.mjs
 Both targets were also driven by hand in headless Chromium — every sample of each set, including the
 error sample in each, and the `importjs` sample that reaches the frame's document. Warm timings are in
 the comparison table above.
+
+The worker split was checked the same way, because it is the kind of change that looks right and does
+nothing: a 50 ms timer was left running in the page while a build was in flight, and it kept firing —
+around 60 ticks across a 3.5 s `nim-wasm` build, which is the whole build, so the page's thread was free
+for all of it. Stopping a build was checked against a program that never ends, and stopping was followed
+by another run to confirm the worker comes back.
 
 First load is ~11 MB of Nim assets plus ~29 MB of Clang assets. The clang runtime is cached per asset
 URL, so it is paid once per page.
@@ -263,23 +302,29 @@ itself has to pass those flags itself.
 
 The `nim` target needs none of this: its whole pipeline is one compile and a sandboxed frame.
 
+**Why this repository does not use it yet.** `createToolchain` is in `@live-codes/clang-wasm` 0.2.x, and
+0.1.0 is what is published. The two ways to reach it today both cost something this repository has
+decided not to spend: a `file:` dependency on the sibling checkout means `npm install` fails without
+that checkout, and vendoring a copy means carrying a frozen snapshot of a package that is still moving.
+So `src/clang-build.js` stays on the runtime directly until 0.2.x is published. That change touches this
+one file, plus a dependency bump.
+
 ## Next steps
 
-1. **Get both targets off the main thread.** For `nim-wasm` the runtime blocks whatever thread it runs
-   on for several seconds; for `nim` the compile is on the main thread too, and a program that never
-   ends hangs the tab with no way to time it out. A worker fixes both, and makes the runaway case
-   killable. LiveCodes already runs its C/C++ compiler in a worker for the first reason, and the Nim
-   bundle is a classic script, so the worker needs `importScripts` rather than the `<script>` tag
-   `src/nim-compiler.js` uses today.
-2. **Build and pin `nim.wasm` in-house.** `npm run assets:nim` fetches a third-party prebuilt bundle
+1. **Stream the program's output.** The worker posts one result, so a program that runs for a while shows
+   nothing until it finishes — the spinner above ran for 25 s with an empty output pane. The plumbing is
+   already there: `runArtifact` takes `onStdout`/`onStderr`, and they only need to post as they fire
+   rather than accumulate to the end.
+2. **Switch to `createToolchain`** once 0.2.x is published — see the note above.
+3. **Build and pin `nim.wasm` in-house.** `npm run assets:nim` fetches a third-party prebuilt bundle
    from someone's GitHub Pages. It works and is recorded in `asset-receipts.json`, but it should be
    built from the Nim sources and pinned the way the Clang assets are, ideally as a versioned
    `@live-codes` package. One compiler instance serves both targets, so that is one artifact to pin.
-3. **Wire both into LiveCodes as separate language modules** — `nim` and `nim-wasm`, sharing one worker
+4. **Wire both into LiveCodes as separate language modules** — `nim` and `nim-wasm`, sharing one worker
    and one compiler instance, following the `lang-cpp-wasm-script.ts` shim. Not one language with a
    toggle: their sample sets, capabilities and error output differ, and a shared picker would have to
    misrepresent at least one of them.
-4. **Trim the `nim-wasm` output.** `-d:release` with `--compileOnly` still emits ~130 KB of wasm for a
+5. **Trim the `nim-wasm` output.** `-d:release` with `--compileOnly` still emits ~130 KB of wasm for a
    hello world, where the JavaScript target emits 7 – 23 KB. Link with `--gc-sections` (the Objective-C
    driver already does) and consider `-d:danger` for a playground.
 
@@ -300,12 +345,19 @@ The `nim` target needs none of this: its whole pipeline is one compile and a san
 - The fidelity gaps listed under "What the JavaScript backend changes": no C interop, inexact 64-bit
   integers, no `cast` or pointers, no `os`/`threads`, and `importjs` requiring a pattern. These are
   properties of the Nim JS target, not of this harness.
-- **A runaway program cannot be interrupted**, because it shares the page's thread.
+- **A runaway program cannot be interrupted.** It runs in a frame on the page because it needs a
+  document, so it holds the page's thread and the stop button has nothing to terminate. This is the one
+  case the worker split does not cover.
 
 **Both**
 
-- **First load is heavy** — ~11 MB of Nim assets, plus ~29 MB of Clang if the WebAssembly target is used
-  at all — and there is no integrity checking on the Nim assets beyond the recorded receipt.
+- **Output is not streamed** — see next step 1.
+- **First load is heavy**: ~11 MB of Nim assets, plus a 475 KB worker bundle on the first run. The Clang
+  *assets*, ~29 MB, are only fetched when the WebAssembly target is actually used; the JavaScript target
+  never instantiates the toolchain. There is no integrity checking on the Nim assets beyond the recorded
+  receipt.
+- **Stopping costs the warm state.** Terminating the worker is the only way to stop a stuck build, and
+  the next run reloads both toolchains from the HTTP cache.
 
 ## Licensing and provenance
 

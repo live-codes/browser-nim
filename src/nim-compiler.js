@@ -99,14 +99,36 @@ export const clearNimCache = (FS, cacheDir = NIM_CACHE_DIR) => {
 	}
 };
 
-const injectScript = (src) =>
-	new Promise((resolve, reject) => {
+// The bundle is a classic Emscripten script, so it has to be evaluated in the global scope of whichever
+// thread it runs on: top-level `var`/`function` declarations are what publish `FS` and `callMain`, and
+// neither an ES module nor a wrapped function would do that. On the page that means a script tag; in
+// the worker it means `importScripts`.
+//
+// `importScripts` is also the test for which one to use, rather than `document`. The Clang runtime
+// installs a `document` stub on the global scope so its own code can run in a worker
+// (`globalThis.document = { querySelectorAll }`), which leaves `typeof document` saying `object` there —
+// with no `createElement` on it.
+//
+// That stub is also why the worker cannot be a module worker: the bundle decides it is in a worker by
+// looking for `importScripts`, which module workers do not have, and without it it initialises for no
+// environment at all.
+const loadScript = (src) => {
+	if (typeof importScripts === 'function') {
+		try {
+			importScripts(src);
+			return Promise.resolve();
+		} catch (error) {
+			return Promise.reject(new Error(`Failed to load ${src}: ${error?.message ?? error}`));
+		}
+	}
+	return new Promise((resolve, reject) => {
 		const script = document.createElement('script');
 		script.src = src;
 		script.onload = () => resolve();
 		script.onerror = () => reject(new Error(`Failed to load ${src}`));
 		document.head.appendChild(script);
 	});
+};
 
 let compilerPromise = null;
 
@@ -125,7 +147,9 @@ export function loadNimCompiler(options) {
 }
 
 async function createNimCompiler({ baseUrl, onLog = () => {}, onStatus = () => {} }) {
-	const base = new URL(baseUrl, document.baseURI);
+	// `location` exists on both threads, unlike `document`, so this module can be loaded either way. The
+	// page resolves its asset URLs absolutely before they reach the worker regardless.
+	const base = new URL(baseUrl, location.href);
 
 	let settle;
 	const ready = new Promise((resolve, reject) => {
@@ -153,7 +177,7 @@ async function createNimCompiler({ baseUrl, onLog = () => {}, onStatus = () => {
 	};
 
 	onStatus('loading the Nim compiler…');
-	await injectScript(new URL('nim-bundle.js', base).href);
+	await loadScript(new URL('nim-bundle.js', base).href);
 	await ready;
 
 	const FS = globalThis.FS;

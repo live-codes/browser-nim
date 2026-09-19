@@ -1,20 +1,21 @@
 // The two pipelines behind one call: Nim source in, program output out.
 //
 //   `nim` — the JavaScript backend
-//     Nim source -> nim.wasm -> one .js -> a sandboxed frame
+//     Nim source -> nim.wasm -> one .js
 //
 //   `nim-wasm` — the C backend
-//     Nim source -> nim.wasm -> N x .c -> clang -> N x .o -> lld -> one .wasm
+//     Nim source -> nim.wasm -> N x .c -> clang -> N x .o -> lld -> one .wasm -> a WASI shim
 //
 // Neither is a subset of the other, which is why both are offered. The first is one compile and no
 // toolchain at all, and it is the only one that can touch a DOM. The second is a real compiler, linker
-// and runtime, so Nim's semantics hold — the JS backend maps Nim onto JavaScript, where 64-bit
-// integers are not exact and C interop does not exist.
+// and runtime, so Nim's semantics hold — the JS backend maps Nim onto JavaScript, where 64-bit integers
+// are not exact and C interop does not exist.
 //
-// Nothing here needs a server, and nothing is sent anywhere.
+// This runs on the worker, so it stops short of anything that needs a document: the JavaScript target's
+// program is compiled here and returned, and the page runs it. See `src/playground.js` for the other
+// half, and note that everything here has to stay worker-safe — no `document`, no DOM APIs.
 import { compileTranslationUnits, loadClangRuntime, runArtifact } from './clang-build.js';
 import { loadNimCompiler } from './nim-compiler.js';
-import { runProgram } from './nim-js-runtime.js';
 
 export const BACKENDS = Object.freeze({ JS: 'nim', WASM: 'nim-wasm' });
 
@@ -46,7 +47,7 @@ export function createRunner({
 
 	const loadNimbase = () => {
 		if (!nimbasePromise) {
-			const url = new URL('nimbase.h', new URL(nimBaseUrl, document.baseURI));
+			const url = new URL('nimbase.h', new URL(nimBaseUrl, location.href));
 			nimbasePromise = fetch(url).then((response) => {
 				if (!response.ok) throw new Error(`Could not load nimbase.h: ${response.status}`);
 				return response.text();
@@ -86,24 +87,19 @@ export function createRunner({
 			}
 
 			if (useJs) {
-				onStatus('running…');
-				const runStarted = performance.now();
-				const ran = await runProgram(generated.js);
+				// Handed back rather than run here: running it needs a document, and this is the worker.
+				// The page runs it — see `src/playground.js`.
 				return {
-					ok: !ran.failed,
-					phase: 'run',
+					ok: true,
+					phase: 'compiled',
 					backend,
-					stdout: ran.stdout,
-					stderr: ran.stderr,
-					output: ran.output,
-					exitCode: ran.failed ? 1 : 0,
-					// The program is one readable file, which is worth showing; the C route's output is
-					// eight mangled translation units, which is not.
+					// One readable file, worth showing. The C route's output is eight mangled translation
+					// units, which is not.
+					js: generated.js,
 					compiledCode: generated.js,
 					jsBytes: generated.js.length,
 					nimMs,
 					compileMs: 0,
-					runMs: performance.now() - runStarted,
 					totalMs: performance.now() - started
 				};
 			}
