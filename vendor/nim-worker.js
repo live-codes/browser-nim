@@ -10136,6 +10136,373 @@ _Unwind_Ptr _Unwind_GetTextRelBase(struct _Unwind_Context *);
     };
   }
 
+  // node_modules/@live-codes/clang-wasm/src/asset-receipts.js
+  var ASSET_RECEIPTS = Object.freeze({
+    "runtime-manifest.v1.json": Object.freeze({
+      bytes: 876,
+      sha256: "1420808d0391ff2d8a2fdf2a9f6bbce8f728e06b1ed1651029ed80b226101444"
+    }),
+    "bin/memfs.wasm.gz": Object.freeze({
+      bytes: 38702,
+      sha256: "cbca9e27ceafbca840603a39fc71e4f83bfb085237c8eab84fd0401ac76806c7"
+    }),
+    "bin/clang.wasm.gz": Object.freeze({
+      bytes: 15721977,
+      sha256: "b1174438d9a67b7ff11e623541b9a0572c024a9e798084b9b021dd9da2da0874"
+    }),
+    "bin/lld.wasm.gz": Object.freeze({
+      bytes: 7837837,
+      sha256: "f842a9b5df3c6d326f0260bfd313c11c2e22bc8b8ae0387deede9a4af55779cd"
+    }),
+    "bin/sysroot.tar.gz": Object.freeze({
+      bytes: 5334358,
+      sha256: "71c0ca54a2153bba59b4a80f68d2030142cc78aad48e76c0b73493cf5078dd19"
+    }),
+    "objective-c/libobjc.a": Object.freeze({
+      bytes: 190272,
+      sha256: "1dde20d4ce78eed271ab725062ef25f1923b20d51384943c9b8f7177eb1fc2d9"
+    }),
+    "objective-c/headers.json": Object.freeze({
+      bytes: 83231,
+      sha256: "64bf5a09feffa612e6f82cfc52f3d6a9c5e4fc3064c3824c24aeea59cb544d8e"
+    })
+  });
+
+  // node_modules/@live-codes/clang-wasm/src/assets.js
+  var PACKAGED_ORIGIN = "https://clang-wasm-assets.invalid/";
+  function resolveAssetSource(options, packaged) {
+    if (options.baseUrl != null && options.baseUrl !== "") {
+      return createHostedSource(options);
+    }
+    if (!packaged) {
+      throw new Error(
+        "baseUrl is required here. The assets that ship in this package can only be read where there is a filesystem, and a browser cannot reach a file inside an npm package - copy them somewhere your page can fetch with `npx --package @live-codes/clang-wasm clang-wasm-copy-assets <dir>` and pass that directory as baseUrl."
+      );
+    }
+    return createPackagedSource(packaged);
+  }
+  function createHostedSource(options) {
+    let baseUrl;
+    try {
+      baseUrl = resolveRuntimeBaseUrl(options.baseUrl);
+    } catch (error) {
+      throw new Error(
+        `baseUrl must be an absolute http(s) URL, or relative to the page in a browser: ${error.message}`,
+        { cause: error }
+      );
+    }
+    const objectiveCBaseUrl = options.objectiveCBaseUrl ? resolveRuntimeBaseUrl(options.objectiveCBaseUrl) : new URL("objective-c/", baseUrl).href;
+    return {
+      kind: "hosted",
+      key: `${baseUrl}\0${objectiveCBaseUrl}`,
+      baseUrl,
+      objectiveCBaseUrl,
+      description: baseUrl,
+      async loadManifest() {
+        return loadRuntimeManifest(resolveRuntimeManifestUrl(baseUrl));
+      },
+      readAsset: (relativePath) => readHostedAsset(new URL(relativePath, baseUrl), relativePath),
+      // The runtime fetches its own assets, so there is nothing to intercept.
+      installFetch() {
+      }
+    };
+  }
+  function createPackagedSource(packaged) {
+    const source = {
+      kind: "packaged",
+      key: `packaged\0${packaged.root.href}`,
+      baseUrl: PACKAGED_ORIGIN,
+      objectiveCBaseUrl: new URL("objective-c/", PACKAGED_ORIGIN).href,
+      description: `the assets packaged with this library (${packaged.root.href})`,
+      readAsset: (relativePath) => readPackagedAsset(packaged, relativePath),
+      async loadManifest() {
+        const bytes = await source.readAsset("runtime-manifest.v1.json");
+        return parseRuntimeManifest(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
+      },
+      installFetch: () => installPackagedFetch(source)
+    };
+    return source;
+  }
+  var fetchingSource = null;
+  function installPackagedFetch(source) {
+    if (fetchingSource === source) return;
+    const original = globalThis.fetch;
+    globalThis.fetch = (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input?.url ?? "";
+      if (url.startsWith(PACKAGED_ORIGIN)) {
+        return source.readAsset(url.slice(PACKAGED_ORIGIN.length)).then((bytes) => new Response(bytes));
+      }
+      return original.call(globalThis, input, init);
+    };
+    fetchingSource = source;
+  }
+  async function readHostedAsset(url, name) {
+    let response = await fetch(url);
+    if (!response.ok) {
+      const gzipped = await fetch(`${url}.gz`);
+      if (!gzipped.ok) {
+        throw new Error(`Failed to load the runtime asset ${url}: ${response.status}`);
+      }
+      response = gzipped;
+    }
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    return verifyReceipt(name, isGzip2(bytes) ? await inflateGzip(bytes, name) : bytes);
+  }
+  async function readPackagedAsset(packaged, relativePath) {
+    let bytes;
+    try {
+      bytes = await packaged.readFile(relativePath);
+    } catch (error) {
+      throw new Error(
+        `Failed to read the packaged asset ${relativePath} from ${packaged.root.href}: ${error.message}`,
+        { cause: error }
+      );
+    }
+    return verifyReceipt(relativePath, bytes);
+  }
+  async function verifyReceipt(name, bytes) {
+    const receipt = ASSET_RECEIPTS[name];
+    if (!receipt) throw new Error(`No pinned receipt for the runtime asset ${name}`);
+    if (bytes.byteLength !== receipt.bytes) {
+      throw new Error(`The runtime asset ${name} is ${bytes.byteLength} bytes, expected ${receipt.bytes}`);
+    }
+    const digest = await sha256Hex2(bytes);
+    if (digest !== receipt.sha256) {
+      throw new Error(
+        `The runtime asset ${name} failed SHA-256 verification: expected ${receipt.sha256}, got ${digest}`
+      );
+    }
+    return bytes;
+  }
+  var isGzip2 = (bytes) => bytes.byteLength > 2 && bytes[0] === 31 && bytes[1] === 139;
+  async function inflateGzip(bytes, label) {
+    if (typeof DecompressionStream !== "function") {
+      throw new Error(`Inflating the runtime asset ${label} needs DecompressionStream`);
+    }
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  }
+  async function sha256Hex2(bytes) {
+    const subtle = globalThis.crypto?.subtle;
+    if (!subtle) {
+      throw new Error(
+        "Verifying the runtime assets needs crypto.subtle: a secure context in the browser, or Node 20 and later."
+      );
+    }
+    const digest = await subtle.digest("SHA-256", bytes);
+    return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+
+  // node_modules/@live-codes/clang-wasm/src/runtime.js
+  var DEFAULT_MAX_ASSET_BYTES = 128 * 1024 * 1024;
+  var runtimes = /* @__PURE__ */ new Map();
+  async function acquireRuntime(source, options = {}) {
+    let pending = runtimes.get(source.key);
+    if (!pending) {
+      pending = createRecord(source, options).catch((error) => {
+        runtimes.delete(source.key);
+        throw error;
+      });
+      runtimes.set(source.key, pending);
+    }
+    const record = await pending;
+    record.references += 1;
+    if (options.onProgress) record.progressSinks.add(options.onProgress);
+    return record;
+  }
+  function releaseRuntime(record, progressSink) {
+    if (progressSink) record.progressSinks.delete(progressSink);
+    record.references -= 1;
+    if (record.references <= 0) runtimes.delete(record.key);
+  }
+  async function withRuntimeLock(record, work) {
+    const previous = record.queue;
+    let release;
+    record.queue = new Promise((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await work();
+    } finally {
+      release();
+    }
+  }
+  async function captureCompilerOutput(record, work) {
+    const { runtime } = record;
+    const previousLog = runtime.log;
+    const previousOutput = record.compilerOutput;
+    const chunks = [];
+    runtime.log = true;
+    record.compilerOutput = (chunk) => chunks.push(chunk);
+    let result;
+    let error = null;
+    try {
+      result = await work();
+    } catch (caught) {
+      error = caught;
+    } finally {
+      record.compilerOutput = previousOutput;
+      runtime.log = previousLog;
+    }
+    return { result, raw: chunks.join(""), error };
+  }
+  function ensureSharedArrayBufferStub() {
+    if (typeof globalThis.SharedArrayBuffer === "undefined") {
+      globalThis.SharedArrayBuffer = class SharedArrayBuffer {
+      };
+    }
+  }
+  async function createRecord(source, options) {
+    ensureSharedArrayBufferStub();
+    const record = {
+      key: source.key,
+      source,
+      references: 0,
+      queue: Promise.resolve(),
+      progressSinks: /* @__PURE__ */ new Set(),
+      runtime: null,
+      objectiveCRuntime: { pending: null, builds: 0 },
+      // Where the compiler's diagnostics go. The runtime is built with a stable callback that reads
+      // this field, rather than one bound to a per-run collector, because the memfs keeps the
+      // function it was constructed with - reassigning `runtime.stdout` later never reaches it.
+      compilerOutput: () => {
+      }
+    };
+    let manifest;
+    try {
+      manifest = await source.loadManifest();
+    } catch (error) {
+      throw new Error(`Failed to load the runtime manifest from ${source.description}: ${error.message}`, {
+        cause: error
+      });
+    }
+    source.installFetch();
+    const runtime = new runtime_default({
+      runtimeBaseUrl: source.baseUrl,
+      manifest,
+      // The compiler's own stdin is never read; the program gets its input at execution time.
+      stdin: () => "",
+      stdout: (chunk) => record.compilerOutput(chunk),
+      progress: (value) => {
+        for (const sink of record.progressSinks) sink(value);
+      },
+      maxAssetBytes: options.maxAssetBytes ?? DEFAULT_MAX_ASSET_BYTES
+    });
+    await runtime.ready;
+    record.runtime = runtime;
+    return record;
+  }
+  var addFileWithDirectories = (runtime, path, contents) => {
+    const parts = path.split("/").slice(0, -1);
+    let directory = "";
+    for (const part of parts) {
+      directory = directory ? `${directory}/${part}` : part;
+      try {
+        runtime.memfs.addDirectory(directory);
+      } catch {
+      }
+    }
+    runtime.memfs.addFile(path, contents);
+  };
+
+  // node_modules/@live-codes/clang-wasm/src/wasi-command.js
+  async function runWasiCommand(module, options = {}) {
+    const stdout = [];
+    const stderr = [];
+    const host = createBrowserWasiHost({
+      args: options.args ?? [],
+      env: options.env ?? {},
+      files: options.files ?? [],
+      programName: options.programName,
+      stdin: options.stdin,
+      stdout: (chunk) => stdout.push(chunk),
+      stderr: (chunk) => stderr.push(chunk)
+    });
+    const wasi = new WASI(host.args, host.envEntries, host.fds, { debug: false });
+    const instance = await WebAssembly.instantiate(module, {
+      wasi_snapshot_preview1: wasi.wasiImport,
+      wasi_unstable: wasi.wasiImport
+    });
+    const exitCode = wasi.start(instance);
+    return {
+      exitCode,
+      stdout: stdout.join(""),
+      stderr: stderr.join(""),
+      readFile: (path) => readHostFile(host, path)
+    };
+  }
+  function readHostFile(host, path) {
+    const segments = String(path).replaceAll("\\", "/").split("/").filter((segment) => segment && segment !== "." && segment !== "..");
+    let node = host.rootDirectory;
+    for (const segment of segments) {
+      node = node?.contents?.get(segment);
+      if (!node) return null;
+    }
+    const data = node?.data;
+    if (data instanceof Uint8Array) return new Uint8Array(data);
+    if (data instanceof ArrayBuffer) return new Uint8Array(data);
+    return null;
+  }
+
+  // node_modules/@live-codes/clang-wasm/src/toolchain-core.js
+  function createToolchainFactory({ packaged }) {
+    async function createToolchain2(options = {}) {
+      const source = resolveAssetSource(options, packaged);
+      const record = await acquireRuntime(source, options);
+      let disposed = false;
+      return {
+        /**
+         * The Clang runtime, as `@wasm-idle/llvm-core/clang` defines it: `compile`, `run`,
+         * `memfs`, `getModule`, `assetUrls`, `compilerConfig`. This is the escape hatch, and it
+         * is the one part of this API that follows someone else's shape.
+         */
+        runtime: record.runtime,
+        /** Where the assets came from, for an error message a user can act on. */
+        assetSource: source.description,
+        /** Write a file into the runtime's filesystem, creating any directories it needs. */
+        addFile: (path, contents) => addFileWithDirectories(record.runtime, path, contents),
+        /** Run `work` with exclusive use of the runtime, which owns one compiler process. */
+        lock: (work) => withRuntimeLock(record, work),
+        /**
+         * Run `work` with the compiler's output collected instead of logged.
+         *
+         * @returns {Promise<{result: any, raw: string, error: Error|null}>} `raw` is what clang
+         *   and wasm-ld said, ANSI colour included; `output.js`'s `compilerDiagnostics` turns it
+         *   into lines. Hold the lock while doing this.
+         */
+        captureCompilerOutput: (work) => captureCompilerOutput(record, work),
+        /** Instantiate and run a `wasi_snapshot_preview1` command module. */
+        runCommand: (module, commandOptions) => runWasiCommand(module, commandOptions),
+        /** Execute an artifact the runtime built. */
+        execute: (artifact, executionOptions) => executeBrowserClangArtifact(artifact, executionOptions),
+        /**
+         * Drop this toolchain's hold on the shared runtime. The runtime stays loaded for as
+         * long as anything else holds it - a compiler, or another toolchain - and is released
+         * when the last one goes. Calling this twice is a no-op.
+         */
+        dispose() {
+          if (disposed) return;
+          disposed = true;
+          releaseRuntime(record, options.onProgress);
+        }
+      };
+    }
+    return { createToolchain: createToolchain2 };
+  }
+
+  // node_modules/@live-codes/clang-wasm/src/output.js
+  var ANSI = /\u001b\[[0-9;]*[A-Za-z]/g;
+  var stripAnsi = (text) => String(text ?? "").replace(ANSI, "");
+  var RUNTIME_LINE = /^\s*>|^\s*done\.?\s*$/;
+  var compilerDiagnostics = (raw) => stripAnsi(raw).split(/\r?\n/).map((line) => line.replace(/\s+$/, "")).filter((line) => line && !RUNTIME_LINE.test(line));
+
+  // node_modules/@live-codes/clang-wasm/src/clang-flags.js
+  var CLANG_DRIVER_DEFAULT_ARGS = Object.freeze(["-fgnuc-version=4.2.1"]);
+
+  // node_modules/@live-codes/clang-wasm/src/toolchain.js
+  var { createToolchain } = createToolchainFactory({ packaged: null });
+
   // src/wasi-signal-header.js
   var WASI_SIGNAL_HEADER_PATH = "include/wasm32-wasi/signal.h";
   var WASI_SIGNAL_HEADER = `/* Minimal <signal.h> supplied by the Nim playground.
@@ -10231,68 +10598,31 @@ static __attribute__((unused)) int raise(int signum) {
 
   // src/clang-build.js
   var NIMBASE_PATH = "include/nimbase.h";
-  var GNUC_VERSION_ARG = "-fgnuc-version=4.2.1";
   var DEFINES_MAIN = /\bint\s+main\s*\(/;
   var NIM_THREE_ARG_MAIN = /int\s+main\s*\(\s*int\s+(\w+)\s*,\s*char\s*\*\*\s*(\w+)\s*,\s*char\s*\*\*\s*(\w+)\s*\)\s*\{/;
   var adaptMainSignature = (content) => content.replace(NIM_THREE_ARG_MAIN, "int main(int $1, char** $2) {\n	char** $3 = (char**)0;");
-  var runtimes = /* @__PURE__ */ new Map();
-  function loadClangRuntime({ baseUrl, onProgress, onLog }) {
+  var toolchains = /* @__PURE__ */ new Map();
+  function loadClangToolchain({ baseUrl, onProgress }) {
     const key = String(baseUrl);
-    if (!runtimes.has(key)) {
-      const pending = createRuntime({ baseUrl, onProgress, onLog }).catch((error) => {
-        runtimes.delete(key);
+    if (!toolchains.has(key)) {
+      const pending = createToolchain({ baseUrl, onProgress }).catch((error) => {
+        toolchains.delete(key);
         throw error;
       });
-      runtimes.set(key, pending);
+      toolchains.set(key, pending);
     }
-    return runtimes.get(key);
-  }
-  var ensureSharedArrayBufferStub = () => {
-    if (typeof globalThis.SharedArrayBuffer === "undefined") {
-      globalThis.SharedArrayBuffer = class SharedArrayBuffer {
-      };
-    }
-  };
-  async function createRuntime({ baseUrl, onProgress, onLog }) {
-    ensureSharedArrayBufferStub();
-    const manifest = await loadRuntimeManifest(resolveRuntimeManifestUrl(baseUrl));
-    const runtime = new runtime_default({
-      runtimeBaseUrl: baseUrl,
-      manifest,
-      // The compiler's own stdin is never read; the program gets its input at execution time.
-      stdin: () => "",
-      stdout: (chunk) => onLog(chunk),
-      // The linker's errors are only forwarded when logging is on, and without them a failed link is
-      // an unexplained "exited with code 1".
-      log: true,
-      progress: onProgress
-    });
-    await runtime.ready;
-    return runtime;
+    return toolchains.get(key);
   }
   var mounted = /* @__PURE__ */ new WeakSet();
-  var mountHeaders = (runtime, { nimbase }) => {
-    if (mounted.has(runtime)) return;
-    const files = [
-      [WASI_SIGNAL_HEADER_PATH, WASI_SIGNAL_HEADER],
-      [NIMBASE_PATH, nimbase]
-    ];
-    for (const [path, content] of files) {
-      const parts = path.split("/").slice(0, -1);
-      let directory = "";
-      for (const part of parts) {
-        directory = directory ? `${directory}/${part}` : part;
-        try {
-          runtime.memfs.addDirectory(directory);
-        } catch {
-        }
-      }
-      runtime.memfs.addFile(path, content);
-    }
-    mounted.add(runtime);
+  var mountHeaders = (toolchain, nimbase) => {
+    if (mounted.has(toolchain)) return;
+    toolchain.addFile(WASI_SIGNAL_HEADER_PATH, WASI_SIGNAL_HEADER);
+    toolchain.addFile(NIMBASE_PATH, nimbase);
+    mounted.add(toolchain);
   };
-  async function compileTranslationUnits(runtime, { translationUnits, nimbase, compileArgs = [] }) {
-    mountHeaders(runtime, { nimbase });
+  async function compileTranslationUnits(toolchain, { translationUnits, nimbase, onCompilerOutput = () => {
+  } }) {
+    mountHeaders(toolchain, nimbase);
     if (!translationUnits.length) throw new Error("Nothing to compile: Nim produced no C files.");
     const activeIndex = Math.max(
       0,
@@ -10300,16 +10630,26 @@ static __attribute__((unused)) int raise(int signum) {
     );
     const active = translationUnits[activeIndex];
     const siblings = translationUnits.filter((_, index) => index !== activeIndex);
-    return runtime.compileArtifact(adaptMainSignature(active.content), {
-      language: "C",
-      fileName: active.path,
-      workspaceFiles: siblings.map(({ path, content }) => ({ path, content })),
-      compileArgs: [GNUC_VERSION_ARG, ...compileArgs]
-    });
+    const { result, raw, error } = await toolchain.lock(
+      () => toolchain.captureCompilerOutput(
+        () => toolchain.runtime.compileArtifact(adaptMainSignature(active.content), {
+          language: "C",
+          fileName: active.path,
+          workspaceFiles: siblings.map(({ path, content }) => ({ path, content })),
+          compileArgs: [...CLANG_DRIVER_DEFAULT_ARGS]
+        })
+      )
+    );
+    onCompilerOutput(raw);
+    if (error) {
+      const diagnostics = compilerDiagnostics(raw);
+      throw new Error(diagnostics.length ? diagnostics.join("\n") : String(error?.message ?? error));
+    }
+    return result;
   }
-  var runArtifact = (artifact, { args = [], stdin, onStdout = () => {
+  var runArtifact = (toolchain, artifact, { args = [], stdin, onStdout = () => {
   }, onStderr = () => {
-  } }) => executeBrowserClangArtifact(artifact, {
+  } }) => toolchain.execute(artifact, {
     args,
     stdin: makeStdin(stdin),
     stdout: onStdout,
@@ -10453,8 +10793,8 @@ static __attribute__((unused)) int raise(int signum) {
 
   // src/run-nim.js
   var BACKENDS = Object.freeze({ JS: "nim", WASM: "nim-wasm" });
-  var ANSI = /\u001b\[[0-9;]*[A-Za-z]/g;
-  var stripAnsi = (text) => String(text ?? "").replace(ANSI, "");
+  var ANSI2 = /\u001b\[[0-9;]*[A-Za-z]/g;
+  var stripAnsi2 = (text) => String(text ?? "").replace(ANSI2, "");
   var unitPath = (index) => `nim/unit-${String(index).padStart(3, "0")}.c`;
   function createRunner({
     nimBaseUrl,
@@ -10469,7 +10809,7 @@ static __attribute__((unused)) int raise(int signum) {
     let nimbasePromise = null;
     let diagnostics = [];
     const nimLog = (text) => {
-      const clean = stripAnsi(text);
+      const clean = stripAnsi2(text);
       if (clean.trim()) diagnostics.push(clean);
       onCompilerLog(clean);
     };
@@ -10528,25 +10868,22 @@ static __attribute__((unused)) int raise(int signum) {
           content: file.content
         }));
         onStatus("loading the Clang toolchain\u2026");
-        const runtime = await loadClangRuntime({
-          baseUrl: clangBaseUrl,
-          onProgress,
-          onLog: (text) => onCompilerLog(stripAnsi(text))
-        });
+        const toolchain = await loadClangToolchain({ baseUrl: clangBaseUrl, onProgress });
         onStatus(`compiling ${translationUnits.length} translation units\u2026`);
         const compileStarted = performance.now();
         let artifact;
         try {
-          artifact = await compileTranslationUnits(runtime, {
+          artifact = await compileTranslationUnits(toolchain, {
             translationUnits,
-            nimbase: await loadNimbase()
+            nimbase: await loadNimbase(),
+            onCompilerOutput: (raw) => onCompilerLog(stripAnsi2(raw))
           });
         } catch (error) {
           return {
             ok: false,
             phase: "clang",
             backend,
-            errors: [stripAnsi(error?.message ?? error)],
+            errors: [stripAnsi2(error?.message ?? error)],
             output: "",
             exitCode: null,
             cFiles: translationUnits.length,
@@ -10561,7 +10898,7 @@ static __attribute__((unused)) int raise(int signum) {
         const stderr = [];
         const order = [];
         const runStarted = performance.now();
-        const result = await runArtifact(artifact, {
+        const result = await runArtifact(toolchain, artifact, {
           args,
           stdin,
           onStdout: (chunk) => {

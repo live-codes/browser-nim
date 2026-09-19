@@ -14,7 +14,7 @@
 // This runs on the worker, so it stops short of anything that needs a document: the JavaScript target's
 // program is compiled here and returned, and the page runs it. See `src/playground.js` for the other
 // half, and note that everything here has to stay worker-safe — no `document`, no DOM APIs.
-import { compileTranslationUnits, loadClangRuntime, runArtifact } from './clang-build.js';
+import { compileTranslationUnits, loadClangToolchain, runArtifact } from './clang-build.js';
 import { loadNimCompiler } from './nim-compiler.js';
 
 export const BACKENDS = Object.freeze({ JS: 'nim', WASM: 'nim-wasm' });
@@ -110,19 +110,16 @@ export function createRunner({
 			}));
 
 			onStatus('loading the Clang toolchain…');
-			const runtime = await loadClangRuntime({
-				baseUrl: clangBaseUrl,
-				onProgress,
-				onLog: (text) => onCompilerLog(stripAnsi(text))
-			});
+			const toolchain = await loadClangToolchain({ baseUrl: clangBaseUrl, onProgress });
 
 			onStatus(`compiling ${translationUnits.length} translation units…`);
 			const compileStarted = performance.now();
 			let artifact;
 			try {
-				artifact = await compileTranslationUnits(runtime, {
+				artifact = await compileTranslationUnits(toolchain, {
 					translationUnits,
-					nimbase: await loadNimbase()
+					nimbase: await loadNimbase(),
+					onCompilerOutput: (raw) => onCompilerLog(stripAnsi(raw))
 				});
 			} catch (error) {
 				return {
@@ -145,7 +142,7 @@ export function createRunner({
 			const stderr = [];
 			const order = [];
 			const runStarted = performance.now();
-			const result = await runArtifact(artifact, {
+			const result = await runArtifact(toolchain, artifact, {
 				args,
 				stdin,
 				onStdout: (chunk) => {

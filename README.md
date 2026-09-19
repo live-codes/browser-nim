@@ -96,7 +96,7 @@ other.
 
 ### Reusing `@live-codes/clang-wasm` rather than shipping a second compiler
 
-`src/clang-build.js` drives the Clang runtime directly instead of going through the package's
+`src/clang-build.js` builds on the package's low-level entry, `createToolchain`, rather than on
 `createCompiler(...).run(code)`. The reason is one option:
 
 ```ts
@@ -108,20 +108,31 @@ workspaceFiles?: BrowserClangWorkspaceFile[];
 Nim's `c` backend emits **one `.c` per module** — `@msystem.nim.c`, `@muser.nim.c`, and so on — and
 they cannot simply be concatenated, because each one declares the same types (`struct Exception`,
 `NIM_BOOL`, …) and would collide in a single translation unit. They have to be compiled separately and
-linked. The runtime supports exactly that through `workspaceFiles`; the package's `run()` does not
-forward the option yet.
+linked. The runtime supports exactly that through `workspaceFiles`, which the four-language API does not
+forward — it compiles one source file — but which the toolchain hands over as part of the runtime.
 
-So the gap is small and worth closing — see [the change that removes this
-workaround](#the-change-that-removes-this-workaround) below. Everything else is already shared: the
-same `BrowserClangRuntime`, the same `vendor/clang` asset tree (**copied with the package's own
-`clang-wasm-copy-assets` script**), and the same `executeBrowserClangArtifact`.
+`createToolchain` is documented as the runtime with the policy taken out, "for a language that is not C,
+C++ or Objective-C but still compiles *through* Clang — one whose frontend translates to C". It gives a
+driver the runtime, the runtime's lock, `addFile`, `captureCompilerOutput` and `execute`, and nothing
+else. Two consequences matter here:
 
-What the reuse buys, concretely: this adds **11 MB** (the Nim compiler) on top of a toolchain
-LiveCodes already serves for C/C++ and Objective-C, rather than a second ~29 MB Clang.
+- **The runtime is shared.** It is acquired from the same pool `createCompiler` uses, keyed by asset
+  source, so a page running C/C++ alongside Nim pays for one runtime, one asset load and one compiler
+  process — and the two queue on the same lock instead of writing over each other's files.
+- **The flags come from the package.** `CLANG_DRIVER_DEFAULT_ARGS` is the package's own list of what a
+  driver's clang invocation needs, which is where `-fgnuc-version` lives and why (finding 1). Asking for
+  it keeps that knowledge in one place instead of copying it here to drift.
+
+Everything else is shared too: the same assets, `vendor/clang` (copied with the package's own
+`clang-wasm-copy-assets` script), and `executeBrowserClangArtifact` for running the result.
+
+What the reuse buys, concretely: this adds **11 MB** (the Nim compiler) on top of a toolchain LiveCodes
+already serves for C/C++ and Objective-C, rather than a second ~29 MB Clang.
 
 ## Findings
 
-Six things had to be worked out. The first is a real bug in the toolchain that affects more than Nim.
+Seven things had to be worked out. The first was a real bug in the toolchain, and it affects more than
+Nim.
 
 ### 1. `__GNUC__` is not defined, and it breaks nimbase.h
 
@@ -142,14 +153,16 @@ error: expected identifier or '('
     │      └─ expands to: static NIM_BOOL* inline nimErrorFlag(void);
 ```
 
-The fix is one argument, restoring what a normal clang invocation does:
+The fix is one argument, restoring what a normal clang invocation does. It is fixed upstream now, in
+`@live-codes/clang-wasm`, where it is passed for C, C++, Objective-C and Objective-C++ and exported as
+`CLANG_DRIVER_DEFAULT_ARGS` for drivers like this one:
 
 ```js
-export const GNUC_VERSION_ARG = '-fgnuc-version=4.2.1';
+export const CLANG_DRIVER_DEFAULT_ARGS = Object.freeze(['-fgnuc-version=4.2.1']);
 ```
 
-This is not Nim-specific. Any C that branches on `#if defined(__GNUC__)` silently gets the fallback
-path through this runtime, so `@live-codes/clang-wasm` may want to pass it for C and C++ too.
+This is not Nim-specific. Any C that branches on `#if defined(__GNUC__)` silently gets the fallback path
+through this runtime, which is why the flag belongs in the toolchain rather than in each driver.
 
 ### 2. Nim's three-argument `main` traps through the wrong entry point
 
@@ -273,41 +286,18 @@ around 60 ticks across a 3.5 s `nim-wasm` build, which is the whole build, so th
 for all of it. Stopping a build was checked against a program that never ends, and stopping was followed
 by another run to confirm the worker comes back.
 
-First load is ~11 MB of Nim assets plus ~29 MB of Clang assets. The clang runtime is cached per asset
-URL, so it is paid once per page.
+First load is ~11 MB of Nim assets. The Clang assets, ~29 MB, load on the first run that needs them, and
+the runtime is cached per asset URL — so it is paid once per worker, and a worker restarted after a stop
+pays it again.
 
-## What the two targets should be built on
+## The shape of a language driver
 
-Both should use `@live-codes/clang-wasm`'s **`createToolchain()`** entry, not its `createCompiler()`.
-The package's own documentation describes it as the runtime with the policy taken out, "for a language
-that is not C, C++ or Objective-C but still compiles *through* Clang — one whose frontend translates to
-C", which is exactly this. It hands over the runtime, the runtime's lock, `addFile`,
-`captureCompilerOutput`, `execute` and `runCommand`, and nothing else.
+`src/clang-build.js` is what a driver for a compiles-to-C language looks like: take the toolchain, mount
+whatever headers the generated C needs, hand the translation units to the runtime with
+`workspaceFiles`, and execute the artifact. Only two things here are Nim's rather than a driver's —
+that the C is Nim's, and that its `main` needs its signature changed for WASI — and both are small.
 
-That matters for two reasons here:
-
-- **`workspaceFiles` is on the runtime, not the four-language API.** Nim's `c` backend emits one `.c`
-  per module and they cannot be concatenated — each declares the same types (`struct Exception`,
-  `NIM_BOOL`, …) and they collide in one translation unit. The runtime compiles siblings as separate
-  translation units through `workspaceFiles`; `createCompiler(...).run()` compiles exactly one source
-  file and does not forward it.
-- **One runtime, not two.** `createToolchain` acquires from the same pool `createCompiler` uses, keyed
-  by asset source, so C/C++ and Nim share one asset load and one compiler process — and therefore one
-  lock, so a Nim build and a C build queue instead of writing over each other's files.
-
-So `src/clang-build.js` here is roughly what a driver looks like if you skip that and drive the runtime
-directly. It works and is verified, but the package's entry is the better surface, and it also exports
-`CLANG_DRIVER_DEFAULT_ARGS` for exactly the reason finding 1 describes — a driver that compiles C
-itself has to pass those flags itself.
-
-The `nim` target needs none of this: its whole pipeline is one compile and a sandboxed frame.
-
-**Why this repository does not use it yet.** `createToolchain` is in `@live-codes/clang-wasm` 0.2.x, and
-0.1.0 is what is published. The two ways to reach it today both cost something this repository has
-decided not to spend: a `file:` dependency on the sibling checkout means `npm install` fails without
-that checkout, and vendoring a copy means carrying a frozen snapshot of a package that is still moving.
-So `src/clang-build.js` stays on the runtime directly until 0.2.x is published. That change touches this
-one file, plus a dependency bump.
+The `nim` target touches none of it: one compile, and a frame to run the result in.
 
 ## Next steps
 
@@ -315,16 +305,15 @@ one file, plus a dependency bump.
    nothing until it finishes — the spinner above ran for 25 s with an empty output pane. The plumbing is
    already there: `runArtifact` takes `onStdout`/`onStderr`, and they only need to post as they fire
    rather than accumulate to the end.
-2. **Switch to `createToolchain`** once 0.2.x is published — see the note above.
-3. **Build and pin `nim.wasm` in-house.** `npm run assets:nim` fetches a third-party prebuilt bundle
+2. **Build and pin `nim.wasm` in-house.** `npm run assets:nim` fetches a third-party prebuilt bundle
    from someone's GitHub Pages. It works and is recorded in `asset-receipts.json`, but it should be
    built from the Nim sources and pinned the way the Clang assets are, ideally as a versioned
    `@live-codes` package. One compiler instance serves both targets, so that is one artifact to pin.
-4. **Wire both into LiveCodes as separate language modules** — `nim` and `nim-wasm`, sharing one worker
+3. **Wire both into LiveCodes as separate language modules** — `nim` and `nim-wasm`, sharing one worker
    and one compiler instance, following the `lang-cpp-wasm-script.ts` shim. Not one language with a
    toggle: their sample sets, capabilities and error output differ, and a shared picker would have to
    misrepresent at least one of them.
-5. **Trim the `nim-wasm` output.** `-d:release` with `--compileOnly` still emits ~130 KB of wasm for a
+4. **Trim the `nim-wasm` output.** `-d:release` with `--compileOnly` still emits ~130 KB of wasm for a
    hello world, where the JavaScript target emits 7 – 23 KB. Link with `--gc-sections` (the Objective-C
    driver already does) and consider `-d:danger` for a playground.
 

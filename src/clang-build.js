@@ -1,39 +1,29 @@
-// Steps 2-4 of the pipeline: Nim's generated C -> objects -> one wasm module -> a run.
+// Steps 2-4 of the C pipeline: Nim's generated C -> objects -> one wasm module -> a run.
 //
-// This drives the Clang 22 runtime directly rather than the `@live-codes/clang-wasm` package API. The
-// package is what LiveCodes uses for C/C++ and Objective-C; its `run(code)` compiles exactly one
-// source file, and the runtime underneath it only compiles siblings as separate translation units
-// when they are handed over as `workspaceFiles`. The package does not forward that option yet, so
-// this module does — which is the whole reason Nim can be built on the same toolchain instead of
-// shipping a second C compiler.
+// This goes through `@live-codes/clang-wasm`'s low-level entry rather than the Clang runtime directly.
+// `createToolchain` is that runtime with the four-language policy taken out, which is exactly what a
+// driver for a language that merely *compiles through* Clang needs: the runtime, its lock, `addFile`,
+// `captureCompilerOutput` and `execute`, and nothing else.
 //
-// Everything else is the same: the same `BrowserClangRuntime`, the same asset tree, the same
-// `executeBrowserClangArtifact` to run the result.
+// Going through the package buys two things beyond not depending on someone else's internals:
+//
+//  - **One runtime, shared.** The toolchain is acquired from the same pool `createCompiler` uses, keyed
+//    by asset source, so a page running C/C++ alongside Nim pays for one runtime and one asset load -
+//    and shares its lock, so the two cannot write over each other's files or redirect each other's
+//    output.
+//  - **One place that knows the flags.** `CLANG_DRIVER_DEFAULT_ARGS` is the package's own list of what a
+//    driver's clang invocation needs, and why. `-fgnuc-version` is in it because clang's `-cc1` does not
+//    define `__GNUC__` on its own, which is what makes Nim's nimbase.h pick an `N_INLINE` that does not
+//    compile. Copying that list here would be a copy that drifts.
 import {
-	BrowserClangRuntime,
-	executeBrowserClangArtifact,
-	loadRuntimeManifest,
-	resolveRuntimeManifestUrl
-} from '@wasm-idle/llvm-core/clang';
+	CLANG_DRIVER_DEFAULT_ARGS,
+	compilerDiagnostics,
+	createToolchain
+} from '@live-codes/clang-wasm/toolchain';
 
 import { WASI_SIGNAL_HEADER, WASI_SIGNAL_HEADER_PATH } from './wasi-signal-header.js';
 
 const NIMBASE_PATH = 'include/nimbase.h';
-
-/**
- * clang's `-cc1` frontend does not define `__GNUC__` on its own: the version comes from the driver's
- * `-fgnuc-version` default, and the runtime drives `-cc1` directly. So anything that decides features
- * with `#if defined(__GNUC__)` silently takes the fallback branch.
- *
- * Nim's nimbase.h is exactly that case, and it matters: the `else` branch defines
- * `N_INLINE(rettype, name)` as `rettype __inline name`, which the wasi-libc `features.h` reached by
- * `<string.h>` then rewrites to `rettype inline name` — invalid C, because by then the parser is
- * already inside the declarator. The `__GNUC__` branch produces `inline rettype name`, which is fine.
- *
- * 4.2.1 is the value clang's driver passes by default, so this restores the behaviour a normal clang
- * invocation would have had.
- */
-const GNUC_VERSION_ARG = '-fgnuc-version=4.2.1';
 
 /** The unit that defines `main` is handed over as the active source; the rest are siblings. */
 const DEFINES_MAIN = /\bint\s+main\s*\(/;
@@ -53,50 +43,27 @@ const NIM_THREE_ARG_MAIN = /int\s+main\s*\(\s*int\s+(\w+)\s*,\s*char\s*\*\*\s*(\
 const adaptMainSignature = (content) =>
 	content.replace(NIM_THREE_ARG_MAIN, 'int main(int $1, char** $2) {\n\tchar** $3 = (char**)0;');
 
-const runtimes = new Map();
-
-export function loadClangRuntime({ baseUrl, onProgress, onLog }) {
-	const key = String(baseUrl);
-	if (!runtimes.has(key)) {
-		const pending = createRuntime({ baseUrl, onProgress, onLog }).catch((error) => {
-			// A failed load must not poison the cache, or a retry can never succeed.
-			runtimes.delete(key);
-			throw error;
-		});
-		runtimes.set(key, pending);
-	}
-	return runtimes.get(key);
-}
+const toolchains = new Map();
 
 /**
- * The runtime's memory wrapper does `buf instanceof SharedArrayBuffer` unconditionally, which throws
- * "SharedArrayBuffer is not defined" on a page that is not cross-origin isolated. Nothing on this path
- * allocates a real one — only the LLDB debug runtime would, and this does not use it — so a stub is
- * enough, and it is what `@live-codes/clang-wasm` installs for the same reason. Without it every run
- * fails at the first compile.
+ * Acquire the shared Clang toolchain, once per asset URL.
+ *
+ * The toolchain holds a reference on the shared runtime and is kept for the life of the thread: the
+ * runtime costs ~29 MB of assets and ~84 MB resident, and keeping it is what makes a warm compile
+ * ~100 ms instead of ~3 s. Nothing disposes it, because the only thing that ends it here is the worker
+ * being terminated, which takes the whole runtime with it.
  */
-const ensureSharedArrayBufferStub = () => {
-	if (typeof globalThis.SharedArrayBuffer === 'undefined') {
-		globalThis.SharedArrayBuffer = class SharedArrayBuffer {};
+export function loadClangToolchain({ baseUrl, onProgress }) {
+	const key = String(baseUrl);
+	if (!toolchains.has(key)) {
+		const pending = createToolchain({ baseUrl, onProgress }).catch((error) => {
+			// A failed load must not poison the cache, or a retry can never succeed.
+			toolchains.delete(key);
+			throw error;
+		});
+		toolchains.set(key, pending);
 	}
-};
-
-async function createRuntime({ baseUrl, onProgress, onLog }) {
-	ensureSharedArrayBufferStub();
-	const manifest = await loadRuntimeManifest(resolveRuntimeManifestUrl(baseUrl));
-	const runtime = new BrowserClangRuntime({
-		runtimeBaseUrl: baseUrl,
-		manifest,
-		// The compiler's own stdin is never read; the program gets its input at execution time.
-		stdin: () => '',
-		stdout: (chunk) => onLog(chunk),
-		// The linker's errors are only forwarded when logging is on, and without them a failed link is
-		// an unexplained "exited with code 1".
-		log: true,
-		progress: onProgress
-	});
-	await runtime.ready;
-	return runtime;
+	return toolchains.get(key);
 }
 
 const mounted = new WeakSet();
@@ -108,37 +75,32 @@ const mounted = new WeakSet();
  * dropping the files in there means the generated C needs no rewriting — its own `#include
  * "nimbase.h"` and `#include <signal.h>` resolve as written.
  */
-const mountHeaders = (runtime, { nimbase }) => {
-	if (mounted.has(runtime)) return;
-	const files = [
-		[WASI_SIGNAL_HEADER_PATH, WASI_SIGNAL_HEADER],
-		[NIMBASE_PATH, nimbase]
-	];
-	for (const [path, content] of files) {
-		const parts = path.split('/').slice(0, -1);
-		let directory = '';
-		for (const part of parts) {
-			directory = directory ? `${directory}/${part}` : part;
-			try {
-				runtime.memfs.addDirectory(directory);
-			} catch {
-				// Already there from the sysroot; memfs asserts on a duplicate node.
-			}
-		}
-		runtime.memfs.addFile(path, content);
-	}
-	mounted.add(runtime);
+const mountHeaders = (toolchain, nimbase) => {
+	if (mounted.has(toolchain)) return;
+	toolchain.addFile(WASI_SIGNAL_HEADER_PATH, WASI_SIGNAL_HEADER);
+	toolchain.addFile(NIMBASE_PATH, nimbase);
+	mounted.add(toolchain);
 };
 
 /**
  * Compile every translation unit and link them into one wasm module.
  *
  * `workspaceFiles` is what makes each sibling its own object file rather than something textually
- * included into one unit — Nim emits a file per module and they declare the same types, so they
- * cannot be concatenated.
+ * included into one unit — Nim emits a file per module and they declare the same types, so they cannot
+ * be concatenated.
+ *
+ * @param {object} options
+ * @param {Array<{path: string, content: string}>} options.translationUnits
+ * @param {string} options.nimbase - the `nimbase.h` the compiler itself does not ship.
+ * @param {(raw: string) => void} [options.onCompilerOutput] - clang's and wasm-ld's output as it
+ *   arrived, for a build log. It is the same stream `compilerDiagnostics` filters.
+ * @throws if clang or the linker failed, carrying their diagnostics as the message.
  */
-export async function compileTranslationUnits(runtime, { translationUnits, nimbase, compileArgs = [] }) {
-	mountHeaders(runtime, { nimbase });
+export async function compileTranslationUnits(
+	toolchain,
+	{ translationUnits, nimbase, onCompilerOutput = () => {} }
+) {
+	mountHeaders(toolchain, nimbase);
 	if (!translationUnits.length) throw new Error('Nothing to compile: Nim produced no C files.');
 
 	const activeIndex = Math.max(
@@ -148,16 +110,33 @@ export async function compileTranslationUnits(runtime, { translationUnits, nimba
 	const active = translationUnits[activeIndex];
 	const siblings = translationUnits.filter((_, index) => index !== activeIndex);
 
-	return runtime.compileArtifact(adaptMainSignature(active.content), {
-		language: 'C',
-		fileName: active.path,
-		workspaceFiles: siblings.map(({ path, content }) => ({ path, content })),
-		compileArgs: [GNUC_VERSION_ARG, ...compileArgs]
-	});
+	// The lock is held for the whole build. The runtime owns one compiler process and one filesystem, so
+	// a second build starting now would write over this one's files.
+	const { result, raw, error } = await toolchain.lock(() =>
+		toolchain.captureCompilerOutput(() =>
+			toolchain.runtime.compileArtifact(adaptMainSignature(active.content), {
+				language: 'C',
+				fileName: active.path,
+				workspaceFiles: siblings.map(({ path, content }) => ({ path, content })),
+				compileArgs: [...CLANG_DRIVER_DEFAULT_ARGS]
+			})
+		)
+	);
+
+	onCompilerOutput(raw);
+
+	if (error) {
+		// What clang or the linker said is the only useful part of a failure — a bare "process exited with
+		// code 1" tells a reader nothing. `compilerDiagnostics` drops the runtime's own chatter first, so
+		// the message is the compiler's words and nothing else.
+		const diagnostics = compilerDiagnostics(raw);
+		throw new Error(diagnostics.length ? diagnostics.join('\n') : String(error?.message ?? error));
+	}
+	return result;
 }
 
-export const runArtifact = (artifact, { args = [], stdin, onStdout = () => {}, onStderr = () => {} }) =>
-	executeBrowserClangArtifact(artifact, {
+export const runArtifact = (toolchain, artifact, { args = [], stdin, onStdout = () => {}, onStderr = () => {} }) =>
+	toolchain.execute(artifact, {
 		args,
 		stdin: makeStdin(stdin),
 		stdout: onStdout,

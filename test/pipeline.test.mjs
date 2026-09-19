@@ -10,7 +10,7 @@ import { after, before, describe, it } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { compileTranslationUnits, loadClangRuntime, runArtifact } from '../src/clang-build.js';
+import { compileTranslationUnits, loadClangToolchain, runArtifact } from '../src/clang-build.js';
 import { createNimServer } from '../serve.mjs';
 import { createNodeNimCompiler, NIM_ASSET_DIR } from './nim-node-context.mjs';
 
@@ -45,40 +45,29 @@ describe('Nim in the browser pipeline', () => {
 	let server;
 	let clangBaseUrl;
 	let nim;
-	let runtime;
-	// clang's diagnostics and the linker's errors arrive on the runtime's own output stream. Keeping
-	// them means a failed build reports why, instead of a bare "exited with code 1".
-	let compilerOutput = [];
+	let toolchain;
 
 	before(async () => {
 		server = createNimServer();
 		await new Promise((resolve) => server.listen(0, resolve));
 		clangBaseUrl = `http://localhost:${server.address().port}/clang/`;
 		nim = await createNodeNimCompiler();
-		runtime = await loadClangRuntime({
-			baseUrl: clangBaseUrl,
-			onLog: (chunk) => compilerOutput.push(chunk),
-			onProgress: () => {}
-		});
+		toolchain = await loadClangToolchain({ baseUrl: clangBaseUrl, onProgress: () => {} });
 	});
 
 	after(() => server?.close());
 
 	const build = async (source) => {
-		compilerOutput = [];
 		const generated = nim.compileToC(source);
 		const translationUnits = generated.files.map((file, index) => ({
 			path: `nim/unit-${String(index).padStart(3, '0')}.c`,
 			content: file.content
 		}));
-		try {
-			return await compileTranslationUnits(runtime, {
-				translationUnits,
-				nimbase: readFileSync(join(NIM_ASSET_DIR, 'nimbase.h'), 'utf8')
-			});
-		} catch (error) {
-			throw new Error(`${error?.message ?? error}\n--- compiler output ---\n${compilerOutput.join('')}`);
-		}
+		// A failure carries clang's own diagnostics as its message, so it needs no dressing up here.
+		return compileTranslationUnits(toolchain, {
+			translationUnits,
+			nimbase: readFileSync(join(NIM_ASSET_DIR, 'nimbase.h'), 'utf8')
+		});
 	};
 
 	it('compiles Nim to C', () => {
@@ -100,7 +89,7 @@ describe('Nim in the browser pipeline', () => {
 
 		const stdout = [];
 		const stderr = [];
-		const result = await runArtifact(artifact, {
+		const result = await runArtifact(toolchain, artifact, {
 			onStdout: (chunk) => stdout.push(chunk),
 			onStderr: (chunk) => stderr.push(chunk)
 		});

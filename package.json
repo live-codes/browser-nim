@@ -14,8 +14,7 @@
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
-    "@live-codes/clang-wasm": "^0.1.0",
-    "@wasm-idle/llvm-core": "^1.0.0",
+    "@live-codes/clang-wasm": "^0.2.0",
     "esbuild": "^0.25.0"
   }
 }

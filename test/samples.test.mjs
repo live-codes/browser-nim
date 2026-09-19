@@ -13,7 +13,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import vm from 'node:vm';
 
-import { compileTranslationUnits, loadClangRuntime, runArtifact } from '../src/clang-build.js';
+import { compileTranslationUnits, loadClangToolchain, runArtifact } from '../src/clang-build.js';
 import { LANGUAGES, samplesFor } from '../src/samples.js';
 import { createNimServer } from '../serve.mjs';
 import { createNodeNimCompiler, NIM_ASSET_DIR } from './nim-node-context.mjs';
@@ -69,16 +69,15 @@ const runJavaScript = (js) => {
 describe('the page samples', () => {
 	let server;
 	let nim;
-	let runtime;
+	let toolchain;
 	let compilerOutput = [];
 
 	before(async () => {
 		server = createNimServer();
 		await new Promise((resolve) => server.listen(0, resolve));
 		nim = await createNodeNimCompiler();
-		runtime = await loadClangRuntime({
+		toolchain = await loadClangToolchain({
 			baseUrl: `http://localhost:${server.address().port}/clang/`,
-			onLog: (chunk) => compilerOutput.push(chunk),
 			onProgress: () => {}
 		});
 	});
@@ -116,17 +115,18 @@ describe('the page samples', () => {
 					);
 
 					compilerOutput = [];
-					const artifact = await compileTranslationUnits(runtime, {
+					const artifact = await compileTranslationUnits(toolchain, {
 						translationUnits: generated.files.map((file, index) => ({
 							path: `nim/unit-${String(index).padStart(3, '0')}.c`,
 							content: file.content
 						})),
-						nimbase: readFileSync(join(NIM_ASSET_DIR, 'nimbase.h'), 'utf8')
+						nimbase: readFileSync(join(NIM_ASSET_DIR, 'nimbase.h'), 'utf8'),
+						onCompilerOutput: (raw) => compilerOutput.push(raw)
 					});
 
 					const stdout = [];
 					const stderr = [];
-					const result = await runArtifact(artifact, {
+					const result = await runArtifact(toolchain, artifact, {
 						onStdout: (chunk) => stdout.push(chunk),
 						onStderr: (chunk) => stderr.push(chunk)
 					});
