@@ -87,7 +87,7 @@ const SOURCE = 'nim-playground';
  * @param {(text: string) => void} [options.onStderr] - the same for stderr.
  * @returns {Promise<{stdout: string, stderr: string, output: string, failed: boolean}>}
  */
-export function runProgram(js, { timeoutMs = 15000, onStdout = () => {}, onStderr = () => {} } = {}) {
+export function executeJavaScript(js, { timeoutMs = 15000, onStdout = () => {}, onStderr = () => {} } = {}) {
 	return new Promise((resolve) => {
 		const frame = document.createElement('iframe');
 		frame.setAttribute('sandbox', 'allow-scripts');

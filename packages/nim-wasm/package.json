@@ -1,0 +1,44 @@
+{
+  "name": "@live-codes/nim-wasm",
+  "version": "0.1.0",
+  "description": "Run Nim by either backend, on the Nim compiler compiled to WebAssembly",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "node": "./src/index.node.js",
+      "browser": "./src/index.js",
+      "default": "./src/index.js"
+    },
+    "./frame": {
+      "node": "./src/js-runtime.node.js",
+      "browser": "./src/js-runtime.js",
+      "default": "./src/js-runtime.js"
+    }
+  },
+  "bin": {
+    "nim-wasm-copy-assets": "./bin/copy-assets.mjs"
+  },
+  "files": [
+    "src",
+    "bin",
+    "assets",
+    "THIRD-PARTY-NOTICES.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\""
+  },
+  "dependencies": {
+    "@live-codes/clang-wasm": "^0.2.0"
+  },
+  "keywords": [
+    "nim",
+    "wasm",
+    "webassembly",
+    "compiler",
+    "playground"
+  ]
+}

@@ -27,6 +27,9 @@ echo "5! = ", factorial(5)
 export const LANGUAGES = Object.freeze({
 	'nim-wasm': {
 		label: 'Nim (WebAssembly)',
+		// Which target of `@live-codes/nim-wasm` this language is. The ids differ on purpose: the package
+		// names a backend, and the page names a language to offer.
+		target: 'wasm',
 		description: 'Compiled to C, then to WebAssembly with the Clang toolchain. Real Nim semantics.',
 		samples: {
 			'Hello, factorial, and a sorted seq': SHARED,
@@ -70,6 +73,7 @@ echo "unreachable"
 
 	nim: {
 		label: 'Nim (JavaScript)',
+		target: 'js',
 		description: 'Compiled to JavaScript and run in a sandboxed frame. Can reach the page.',
 		samples: {
 			'Hello, factorial, and a sorted seq': SHARED,

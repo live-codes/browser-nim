@@ -1,11 +1,2 @@
 # Taste
-
-## Git / repository hygiene
-
-- Always keep assets, `vendor` directories, build outputs, and generated bundles tracked and committed, so the repository always contains everything needed to run without building first — a build could fail against changed dependencies and lose runnable code. Only things that are not needed to run may be gitignored: `node_modules` and throwaway `scratch` directories. Confidence: 0.97
-- Throwaway scratch/probe directories may live inside the repo as long as they are gitignored — no need to move temporary work to an out-of-repo session scratchpad. Confidence: 0.9
-
-## Code style
-
-- Uses tab indentation consistently across source and test files. Confidence: 0.85
-- Comments and docs should explain the reasoning ("why") behind non-obvious decisions rather than restating what the code does. Confidence: 0.75
+See [taste/taste.md](taste/taste.md)

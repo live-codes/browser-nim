@@ -275,6 +275,7 @@
   const run = async () => {
     if (running) return;
     running = true;
+    const started = performance.now();
     runButton.disabled = true;
     stopButton.disabled = false;
     // Reset the panes, including the error styling a previous run's failure may have left behind.
@@ -291,7 +292,9 @@
     setStatus('working…', 'busy');
 
     try {
-      const result = await playground.run(codeEl.value, { backend: languagePicker.value });
+      const result = await playground.run(codeEl.value, {
+        target: LANGUAGES[languagePicker.value].target
+      });
 
       if (result.errors?.length) {
         errorsEl.textContent = result.errors.join('\n');
@@ -315,24 +318,24 @@
         $('codeWrap').hidden = false;
       }
 
-      if (result.phase === 'run') {
-        setStatus(result.ok ? 'done' : `exit code ${result.exitCode}`, result.ok ? 'ok' : 'err');
-        const artifact = result.artifactBytes
-          ? `${result.cFiles} C files · ${(result.artifactBytes / 1024).toFixed(0)} KB wasm`
-          : `${(result.jsBytes / 1024).toFixed(0)} KB JavaScript`;
-        metaEl.textContent = [
-          artifact,
-          `nim ${Math.round(result.nimMs)}ms`,
-          result.compileMs ? `clang ${Math.round(result.compileMs)}ms` : null,
-          `run ${Math.round(result.runMs)}ms`,
-          `total ${(result.totalMs / 1000).toFixed(1)}s`
-        ]
-          .filter(Boolean)
-          .join(' · ');
-      } else if (result.phase === 'stopped') {
+      // The package's result has no `phase`: what it does guarantee is `errors` being empty when it built,
+      // and null `exitCode` when the program never ran. So the status is drawn from those rather than from
+      // a field the demo would have to invent.
+      if (result.phase === 'stopped') {
         setStatus('stopped', 'err');
+      } else if (result.errors?.length) {
+        setStatus(result.phase ? `${result.phase} failed` : 'build failed', 'err');
       } else {
-        setStatus(`${result.phase} failed`, 'err');
+        setStatus(result.ok ? 'done' : `exit code ${result.exitCode}`, result.ok ? 'ok' : 'err');
+        // The meta line draws only on what the package reports, plus the clock this page started.
+        metaEl.textContent = [
+          result.compiledCode
+            ? `${(result.compiledCode.length / 1024).toFixed(0)} KB JavaScript`
+            : 'WebAssembly',
+          `compile ${Math.round(result.compileMs)}ms`,
+          `run ${Math.round(result.runMs)}ms`,
+          `total ${((performance.now() - started) / 1000).toFixed(1)}s`
+        ].join(' · ');
       }
     } catch (error) {
       // A failure here is the harness itself — a missing asset, say — not the program.

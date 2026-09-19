@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@live-codes/clang-wasm": "^0.2.0",
+    "@live-codes/nim-wasm": "file:./packages/nim-wasm",
     "esbuild": "^0.25.0"
   }
 }

@@ -1,6 +1,6 @@
 // The page side: owns the worker that compiles, and the frame that runs what it compiles.
 //
-// Program output is delivered twice over: `onOutput` reports each chunk as the program writes it, and
+// Program output is delivered twice over: `onOutput` reports each chunk as the program is written, and
 // the final result carries the whole thing. A caller draws the first and trusts the second, since the
 // stream is what makes a slow program watchable and the result is what makes the pane correct.
 //
@@ -9,11 +9,13 @@
 // compiler nor the Clang runtime can freeze it; and a build that runs away can be killed, because
 // discarding a worker is a real way to stop it.
 //
-// The JavaScript target's *program* is the exception: it runs in a frame on this thread, because the
-// DOM is the reason to use that target at all. That also means a program of its own that loops forever
-// still hangs the page, and no stop button can reach it. Running it somewhere killable would mean
-// running it without a document.
-import { runProgram } from './nim-js-runtime.js';
+// The JavaScript target's *program* is the exception: it runs in a frame on this thread, because the DOM
+// is the reason to use that target at all. That also means a program of its own that loops forever still
+// hangs the page, and no stop button can reach it. Running it somewhere killable would mean running it
+// without a document.
+// The runner from `/frame` rather than the package's main entry, which would bring the compiler and the
+// Clang toolchain into this bundle — the page has no use for either, and the worker loads them itself.
+import { executeJavaScript } from '@live-codes/nim-wasm/frame';
 
 export function createPlayground({
 	// Where `npm run bundle` writes the worker. Only the bundling convention is assumed; pass a URL to
@@ -35,18 +37,10 @@ export function createPlayground({
 	let worker = null;
 	let pending = null;
 
-	const settle = (result, { stripProgram = false } = {}) => {
+	const settle = (result) => {
 		const waiting = pending;
 		pending = null;
-		if (!waiting) return;
-
-		if (stripProgram) {
-			// The program is already in `compiledCode`; sending it back as well would duplicate it.
-			const { js, ...rest } = result;
-			waiting.resolve(rest);
-			return;
-		}
-		waiting.resolve(result);
+		waiting?.resolve(result);
 	};
 
 	const fail = (error) => {
@@ -54,7 +48,7 @@ export function createPlayground({
 		settle({
 			ok: false,
 			phase: 'worker',
-			backend: waiting?.backend,
+			target: waiting?.target,
 			errors: [String(error?.message ?? error)],
 			output: ''
 		});
@@ -73,15 +67,16 @@ export function createPlayground({
 		const waiting = pending;
 		if (!waiting) return;
 
-		// The JavaScript target comes back compiled and is run here; everything else has already run.
-		if (result.js) {
+		// The JavaScript target comes back compiled and is run here; everything else has already run. The
+		// target that was asked for is what says so, rather than anything in the result.
+		if (waiting.target === 'js') {
 			onStatus('running…');
 			const runStarted = performance.now();
-			const ran = await runProgram(result.js, {
+			const ran = await executeJavaScript(result.compiledCode, {
 				onStdout: (text) => onOutput(text, 'out'),
 				onStderr: (text) => onOutput(text, 'err')
 			});
-			const merged = {
+			settle({
 				...result,
 				phase: 'run',
 				ok: !ran.failed,
@@ -92,8 +87,7 @@ export function createPlayground({
 				errors: ran.failed && ran.stderr ? [ran.stderr] : [],
 				runMs: performance.now() - runStarted,
 				totalMs: performance.now() - waiting.started
-			};
-			settle(merged, { stripProgram: true });
+			});
 			return;
 		}
 
@@ -109,23 +103,15 @@ export function createPlayground({
 	};
 
 	return {
-		async run(source, { backend, args = [], stdin = '' } = {}) {
+		/** `target` is one of `@live-codes/nim-wasm`'s, e.g. `wasm` or `js`. */
+		async run(source, { target, args = [], stdin = '' } = {}) {
 			if (pending) throw new Error('A run is already in progress.');
 			const started = performance.now();
 
-			const result = await new Promise((resolve) => {
-				pending = { resolve, backend, started };
-				ensureWorker().postMessage({
-					type: 'run',
-					source,
-					backend,
-					args,
-					stdin,
-					...assets
-				});
+			return new Promise((resolve) => {
+				pending = { resolve, target, started };
+				ensureWorker().postMessage({ type: 'run', source, target, args, stdin, ...assets });
 			});
-
-			return result;
 		},
 
 		/**
@@ -142,7 +128,7 @@ export function createPlayground({
 			settle({
 				ok: false,
 				phase: 'stopped',
-				backend: waiting.backend,
+				target: waiting.target,
 				errors: ['Stopped.'],
 				output: '',
 				totalMs: performance.now() - waiting.started

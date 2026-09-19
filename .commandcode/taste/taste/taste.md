@@ -1,0 +1,14 @@
+# Taste
+- Always keep assets, `vendor` directories, build outputs, and generated bundles tracked and committed, so the repository always contains everything needed to run without building first — a build could fail against changed dependencies and lose runnable code. Only things that are not needed to run may be gitignored: `node_modules` and throwaway `scratch` directories. Confidence: 0.97
+- Throwaway scratch/probe directories may live inside the repo as long as they are gitignored — no need to move temporary work to an out-of-repo session scratchpad. Confidence: 0.9
+- Uses tab indentation consistently across source and test files. Confidence: 0.85
+- Comments and docs should explain the reasoning ("why") behind non-obvious decisions rather than restating what the code does. Confidence: 0.75
+- Prefers to measure before deciding: run the experiment and compare real numbers before changing a build, optimization, or default, rather than acting on a plausible-sounding recommendation. Confidence: 0.85
+- Verify a guard by proving it *fails*, not only that it passes — e.g. tamper with the expected value and confirm the check reports the mismatch. A validation that only ever succeeds is untested. Confidence: 0.8
+- Turns one-off investigations into committed, re-runnable scripts exposed as an npm script, so a claim (e.g. a size measurement) can be re-checked later instead of being remembered. Confidence: 0.75
+- Prefers pins over receipts: third-party assets are locked to a committed expectation (sizes, hashes, and provenance) that the fetcher verifies against and fails loudly on mismatch, with an explicit deliberate flag (e.g. `--update`) to move the pin — never deriving the expectation from whatever was downloaded. Confidence: 0.85
+- Avoids keeping a private copy of logic that upstream owns/drift from; prefers the fix upstream (e.g. an option on the upstream API) so every consumer benefits rather than vendoring a copy. Confidence: 0.7
+- Prefers preserving correctness, safety checks, and actionable error diagnostics over marginal size/speed wins — will reject an optimization (e.g. `-d:danger`) that trades a real check for a few percent. Confidence: 0.7
+- Keeps README/docs honest and current: records measured numbers and the decision behind them, and corrects earlier advice that turned out to be wrong rather than leaving it standing. Confidence: 0.7
+- When adding a new package/library next to an existing sibling one, studies that sibling first and mirrors its conventions and public API surface (option names, the result-object shape, the asset-source model, aux tooling) rather than inventing new ones — following the same conventions family-wide. Confidence: 0.75
+- Prefers to leave work uncommitted over committing a state that breaks the repo (e.g. a mid-refactor that no longer runs), and reports plainly what is broken and what remains rather than hiding it. Confidence: 0.6

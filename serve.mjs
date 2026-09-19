@@ -70,7 +70,11 @@ export function createNimServer({ root = resolve(import.meta.dirname) } = {}) {
 				return await serveAsset(res, join(root, 'vendor', 'clang'), requested.slice('/clang/'.length));
 			}
 			if (requested.startsWith('/nim/')) {
-				return await serveAsset(res, join(root, 'vendor', 'nim'), requested.slice('/nim/'.length));
+				return await serveAsset(
+					res,
+					join(root, 'packages', 'nim-wasm', 'assets', 'nim'),
+					requested.slice('/nim/'.length)
+				);
 			}
 
 			const target = resolve(join(root, normalize(requested === '/' ? '/index.html' : requested)));

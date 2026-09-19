@@ -2350,6 +2350,121 @@
     }
   });
 
+  // packages/nim-wasm/src/asset-receipts.js
+  var ASSET_SOURCE = Object.freeze({
+    kind: "third-party prebuilt",
+    project: "Nim-WASM-Compiler",
+    repository: "https://github.com/benagastov/Nim-WASM-Compiler",
+    commit: "ca3471ae124b40b51268da6e202753dfa061731c",
+    committedAt: "2026-06-15T05:32:08Z",
+    url: "https://benagastov.github.io/Nim-WASM-Compiler/static/nim/",
+    license: "MIT, for that project's glue and patches; the compiler it contains is Nim 2.2.4, also MIT",
+    compiler: {
+      name: "nim",
+      version: "2.2.4",
+      host: "Emscripten, wasm32",
+      buildCommand: 'nim c --cpu:wasm32 --os:any --define:danger --passC:"-s USE_ZLIB=1"'
+    }
+  });
+  var ASSET_RECEIPTS = Object.freeze({
+    "nim-bundle.js": {
+      bytes: 6566418,
+      sha256: "170a78937e21ac0ec47e7d3f0eccefc261178f336ba92ab43acdb2f73ffd1301"
+    },
+    "nim.wasm": {
+      bytes: 4812366,
+      sha256: "40e8c62fb96ee786fcd91f0ee2306241adeaf38c148bc8ec9788e0cc5cb26567"
+    },
+    "nimbase.h": {
+      bytes: 20734,
+      sha256: "28491d05916eab446de054370808030b33b63fd5623dcd454212adec27ee934d"
+    }
+  });
+
+  // packages/nim-wasm/src/assets.js
+  async function sha256Hex(bytes) {
+    const subtle = globalThis.crypto?.subtle;
+    if (!subtle) {
+      throw new Error(
+        "Verifying the compiler assets needs crypto.subtle: a secure context in the browser, or Node 20 and later."
+      );
+    }
+    const digest = await subtle.digest("SHA-256", bytes);
+    return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+  async function verifyReceipt(name, bytes) {
+    const receipt = ASSET_RECEIPTS[name];
+    if (!receipt) throw new Error(`No pinned receipt for the compiler asset ${name}`);
+    if (bytes.byteLength !== receipt.bytes) {
+      throw new Error(
+        `The compiler asset ${name} is ${bytes.byteLength} bytes, expected ${receipt.bytes}`
+      );
+    }
+    const digest = await sha256Hex(bytes);
+    if (digest !== receipt.sha256) {
+      throw new Error(
+        `The compiler asset ${name} failed SHA-256 verification: expected ${receipt.sha256}, got ${digest}`
+      );
+    }
+    return bytes;
+  }
+  function resolveAssetSource(options, packaged) {
+    if (options.baseUrl != null && options.baseUrl !== "") return createHostedSource(options);
+    if (!packaged) {
+      throw new Error(
+        "baseUrl is required here. The assets that ship in this package can only be read where there is a filesystem, and a browser cannot reach a file inside an npm package - copy them somewhere your page can fetch with `npx --package @live-codes/nim-wasm nim-wasm-copy-assets <dir>` and pass that directory as baseUrl."
+      );
+    }
+    return createPackagedSource(packaged);
+  }
+  var resolveBaseUrl = (value) => {
+    let resolved;
+    try {
+      resolved = new URL(String(value), typeof location === "undefined" ? void 0 : location.href);
+    } catch (error) {
+      throw new Error(
+        `baseUrl must be an absolute http(s) URL, or relative to the page in a browser: ${error.message}`,
+        { cause: error }
+      );
+    }
+    if (resolved.protocol !== "http:" && resolved.protocol !== "https:") {
+      throw new Error("baseUrl must use HTTP(S).");
+    }
+    if (!resolved.pathname.endsWith("/")) resolved.pathname += "/";
+    return resolved;
+  };
+  function createHostedSource(options) {
+    const baseUrl = resolveBaseUrl(options.baseUrl);
+    return {
+      kind: "hosted",
+      key: baseUrl.href,
+      description: baseUrl.href,
+      baseUrl: baseUrl.href,
+      // Where the Emscripten bundle is, and where it should look for `nim.wasm`.
+      bundleUrl: new URL("nim-bundle.js", baseUrl).href,
+      locateFile: (name) => new URL(name, baseUrl).href,
+      async readAsset(name) {
+        const url = new URL(name, baseUrl);
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`Failed to load the compiler asset ${url}: ${response.status}`);
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        return verifyReceipt(name, bytes);
+      }
+    };
+  }
+  function createPackagedSource(packaged) {
+    return {
+      kind: "packaged",
+      key: `packaged\0${packaged.root.href}`,
+      description: `the assets packaged with this library (${packaged.root.href})`,
+      // No URL: this package reads the bundle itself and hands Emscripten the bytes, so nothing is
+      // fetched and everything can be checked.
+      bundleUrl: null,
+      locateFile: null,
+      readAsset: async (name) => verifyReceipt(name, await packaged.readFile(name))
+    };
+  }
+
   // node_modules/@wasm-idle/llvm-core/dist/clang/src/types.js
   function resolveDebugMode(options) {
     if (options.debugMode !== void 0) {
@@ -6877,7 +6992,7 @@ _Unwind_Ptr _Unwind_GetTextRelBase(struct _Unwind_Context *);
   }
 
   // node_modules/@wasm-idle/llvm-core/dist/clang/src/dwarf.js
-  async function sha256Hex(value) {
+  async function sha256Hex2(value) {
     const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value instanceof Uint8Array ? new Uint8Array(value) : new Uint8Array(value);
     const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
     return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -6900,10 +7015,10 @@ _Unwind_Ptr _Unwind_GetTextRelBase(struct _Unwind_Context *);
     return {
       kind: "dwarf",
       sourceRoot: "/workspace",
-      moduleSha256: await sha256Hex(artifactBytes),
+      moduleSha256: await sha256Hex2(artifactBytes),
       files: await Promise.all(sourceEntries.map(async ([path, content]) => ({
         path: `/workspace/${path}`,
-        contentSha256: await sha256Hex(content)
+        contentSha256: await sha256Hex2(content)
       }))),
       compiler: provenance
     };
@@ -10137,7 +10252,7 @@ _Unwind_Ptr _Unwind_GetTextRelBase(struct _Unwind_Context *);
   }
 
   // node_modules/@live-codes/clang-wasm/src/asset-receipts.js
-  var ASSET_RECEIPTS = Object.freeze({
+  var ASSET_RECEIPTS2 = Object.freeze({
     "runtime-manifest.v1.json": Object.freeze({
       bytes: 876,
       sha256: "1420808d0391ff2d8a2fdf2a9f6bbce8f728e06b1ed1651029ed80b226101444"
@@ -10170,18 +10285,18 @@ _Unwind_Ptr _Unwind_GetTextRelBase(struct _Unwind_Context *);
 
   // node_modules/@live-codes/clang-wasm/src/assets.js
   var PACKAGED_ORIGIN = "https://clang-wasm-assets.invalid/";
-  function resolveAssetSource(options, packaged) {
+  function resolveAssetSource2(options, packaged) {
     if (options.baseUrl != null && options.baseUrl !== "") {
-      return createHostedSource(options);
+      return createHostedSource2(options);
     }
     if (!packaged) {
       throw new Error(
         "baseUrl is required here. The assets that ship in this package can only be read where there is a filesystem, and a browser cannot reach a file inside an npm package - copy them somewhere your page can fetch with `npx --package @live-codes/clang-wasm clang-wasm-copy-assets <dir>` and pass that directory as baseUrl."
       );
     }
-    return createPackagedSource(packaged);
+    return createPackagedSource2(packaged);
   }
-  function createHostedSource(options) {
+  function createHostedSource2(options) {
     let baseUrl;
     try {
       baseUrl = resolveRuntimeBaseUrl(options.baseUrl);
@@ -10207,7 +10322,7 @@ _Unwind_Ptr _Unwind_GetTextRelBase(struct _Unwind_Context *);
       }
     };
   }
-  function createPackagedSource(packaged) {
+  function createPackagedSource2(packaged) {
     const source = {
       kind: "packaged",
       key: `packaged\0${packaged.root.href}`,
@@ -10246,7 +10361,7 @@ _Unwind_Ptr _Unwind_GetTextRelBase(struct _Unwind_Context *);
       response = gzipped;
     }
     const bytes = new Uint8Array(await response.arrayBuffer());
-    return verifyReceipt(name, isGzip2(bytes) ? await inflateGzip(bytes, name) : bytes);
+    return verifyReceipt2(name, isGzip2(bytes) ? await inflateGzip(bytes, name) : bytes);
   }
   async function readPackagedAsset(packaged, relativePath) {
     let bytes;
@@ -10258,15 +10373,15 @@ _Unwind_Ptr _Unwind_GetTextRelBase(struct _Unwind_Context *);
         { cause: error }
       );
     }
-    return verifyReceipt(relativePath, bytes);
+    return verifyReceipt2(relativePath, bytes);
   }
-  async function verifyReceipt(name, bytes) {
-    const receipt = ASSET_RECEIPTS[name];
+  async function verifyReceipt2(name, bytes) {
+    const receipt = ASSET_RECEIPTS2[name];
     if (!receipt) throw new Error(`No pinned receipt for the runtime asset ${name}`);
     if (bytes.byteLength !== receipt.bytes) {
       throw new Error(`The runtime asset ${name} is ${bytes.byteLength} bytes, expected ${receipt.bytes}`);
     }
-    const digest = await sha256Hex2(bytes);
+    const digest = await sha256Hex3(bytes);
     if (digest !== receipt.sha256) {
       throw new Error(
         `The runtime asset ${name} failed SHA-256 verification: expected ${receipt.sha256}, got ${digest}`
@@ -10282,7 +10397,7 @@ _Unwind_Ptr _Unwind_GetTextRelBase(struct _Unwind_Context *);
     const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
     return new Uint8Array(await new Response(stream).arrayBuffer());
   }
-  async function sha256Hex2(bytes) {
+  async function sha256Hex3(bytes) {
     const subtle = globalThis.crypto?.subtle;
     if (!subtle) {
       throw new Error(
@@ -10448,7 +10563,7 @@ _Unwind_Ptr _Unwind_GetTextRelBase(struct _Unwind_Context *);
   // node_modules/@live-codes/clang-wasm/src/toolchain-core.js
   function createToolchainFactory({ packaged }) {
     async function createToolchain2(options = {}) {
-      const source = resolveAssetSource(options, packaged);
+      const source = resolveAssetSource2(options, packaged);
       const record = await acquireRuntime(source, options);
       let disposed = false;
       return {
@@ -10503,7 +10618,7 @@ _Unwind_Ptr _Unwind_GetTextRelBase(struct _Unwind_Context *);
   // node_modules/@live-codes/clang-wasm/src/toolchain.js
   var { createToolchain } = createToolchainFactory({ packaged: null });
 
-  // src/wasi-signal-header.js
+  // packages/nim-wasm/src/wasi-signal-header.js
   var WASI_SIGNAL_HEADER_PATH = "include/wasm32-wasi/signal.h";
   var WASI_SIGNAL_HEADER = `/* Minimal <signal.h> supplied by the Nim playground.
    The runtime's WASI sysroot has no signal.h; Nim's system module needs one to compile. WASI has no
@@ -10596,7 +10711,7 @@ static __attribute__((unused)) int raise(int signum) {
 #endif
 `;
 
-  // src/clang-build.js
+  // packages/nim-wasm/src/clang.js
   var NIMBASE_PATH = "include/nimbase.h";
   var DEFINES_MAIN = /\bint\s+main\s*\(/;
   var NIM_THREE_ARG_MAIN = /int\s+main\s*\(\s*int\s+(\w+)\s*,\s*char\s*\*\*\s*(\w+)\s*,\s*char\s*\*\*\s*(\w+)\s*\)\s*\{/;
@@ -10665,7 +10780,337 @@ static __attribute__((unused)) int raise(int signum) {
     };
   };
 
-  // src/nim-compiler.js
+  // packages/nim-wasm/src/output.js
+  var ANSI2 = /\u001b\[[0-9;]*[A-Za-z]/g;
+  var stripAnsi2 = (text) => String(text ?? "").replace(ANSI2, "");
+  var compilerDiagnostics2 = (text) => stripAnsi2(text).split(/\r?\n/).map((line) => line.replace(/\s+$/, "")).filter((line) => line.trim());
+
+  // packages/nim-wasm/src/targets.js
+  var TARGETS = Object.freeze({
+    WASM: "wasm",
+    JS: "js"
+  });
+  var ALIASES = /* @__PURE__ */ new Map([
+    ["wasm", TARGETS.WASM],
+    ["c", TARGETS.WASM],
+    ["nim-wasm", TARGETS.WASM],
+    ["js", TARGETS.JS],
+    ["javascript", TARGETS.JS],
+    ["nodejs", TARGETS.JS]
+  ]);
+  function resolveTarget(value) {
+    const id = ALIASES.get(String(value ?? "").trim().toLowerCase());
+    if (!id) {
+      throw new Error(
+        `Unknown target ${JSON.stringify(value)}. Expected one of: ${Object.values(TARGETS).join(", ")}.`
+      );
+    }
+    return id;
+  }
+  var DEFAULT_TARGET = TARGETS.WASM;
+
+  // packages/nim-wasm/src/api.js
+  function createApi({ packaged, loadNimCompiler: loadNimCompiler2, executeJavaScript: executeJavaScript2 }) {
+    async function createCompiler2(options = {}) {
+      const target = resolveTarget(options.target ?? DEFAULT_TARGET);
+      const source = resolveAssetSource(options, packaged);
+      const onLog = options.onLog ?? (() => {
+      });
+      const onStatus = options.onStatus ?? (() => {
+      });
+      const compiler = await loadNimCompiler2({ source, onStatus });
+      const takeOutput = () => {
+        const raw = compiler.takeOutput();
+        if (raw.trim()) onLog(raw, "nim");
+        return compilerDiagnostics2(raw);
+      };
+      let toolchainPromise = null;
+      const toolchain = () => {
+        if (!toolchainPromise) {
+          toolchainPromise = loadClangToolchain({
+            baseUrl: options.clangBaseUrl,
+            onProgress: options.onProgress
+          });
+        }
+        return toolchainPromise;
+      };
+      let nimbasePromise = null;
+      const nimbase = () => {
+        if (!nimbasePromise) {
+          nimbasePromise = source.readAsset("nimbase.h").then((bytes) => new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+        }
+        return nimbasePromise;
+      };
+      const failure = (compileMs, errors, fallback = "The Nim compiler produced no output.") => ({
+        ok: false,
+        stdout: "",
+        stderr: "",
+        output: "",
+        errors: errors.length ? errors : [fallback],
+        exitCode: null,
+        compileMs,
+        runMs: null
+      });
+      return {
+        /** The resolved target, e.g. `wasm`. */
+        target,
+        /** Where the compiler's assets came from, for an error message a user can act on. */
+        assetSource: source.description,
+        /**
+         * Compile and run a program.
+         *
+         * @param {string} code - the program source.
+         * @param {string|Uint8Array} [input] - stdin, handed to the program once and then closed. The
+         *   `js` target does not read stdin.
+         * @param {object} [runOptions] - per-run overrides: `args`, `compileArgs`, and `execute`.
+         * @param {boolean} [runOptions.execute] - for the `js` target, compile without running and hand
+         *   the program back as `compiledCode`. This is for a caller that wants to place the program
+         *   itself — on a thread with a document, say — since otherwise it runs wherever this is called.
+         * @returns {Promise<{stdout: string, stderr: string, output: string, errors: string[],
+         *   exitCode: number|null, compileMs: number, runMs: number|null, compiledCode?: string}>}
+         *   `output` is stdout and stderr in the order the program wrote them. `errors` holds the
+         *   compilers' diagnostics and is empty when it compiled; `exitCode` is null when the program
+         *   never ran.
+         */
+        async run(code, input = "", runOptions = {}) {
+          if (typeof code !== "string") {
+            throw new Error("run() needs the program source as its first argument.");
+          }
+          const compileStarted = performance.now();
+          if (target === TARGETS.JS) {
+            const compiled2 = compiler.compileToJs(code, options.compileArgs ?? []);
+            const compileMs2 = Math.round(performance.now() - compileStarted);
+            if (!compiled2.ok) return failure(compileMs2, takeOutput());
+            const stdout2 = [];
+            const stderr2 = [];
+            const onOutput2 = runOptions.onOutput ?? options.onOutput ?? (() => {
+            });
+            const emit = (into, stream) => (text) => {
+              into.push(text);
+              onOutput2(text, stream);
+            };
+            if (runOptions.execute === false) {
+              return {
+                ok: true,
+                stdout: "",
+                stderr: "",
+                output: "",
+                errors: [],
+                exitCode: null,
+                compileMs: compileMs2,
+                runMs: null,
+                compiledCode: compiled2.js
+              };
+            }
+            onStatus("running\u2026");
+            const runStarted2 = performance.now();
+            const ran2 = await executeJavaScript2(compiled2.js, {
+              onStdout: emit(stdout2),
+              onStderr: emit(stderr2)
+            });
+            return {
+              ok: !ran2.failed,
+              stdout: ran2.stdout,
+              stderr: ran2.stderr,
+              // What a terminal would have shown: both streams in the order they were written.
+              output: ran2.output,
+              errors: [],
+              exitCode: ran2.failed ? 1 : 0,
+              compileMs: compileMs2,
+              runMs: Math.round(performance.now() - runStarted2),
+              compiledCode: compiled2.js
+            };
+          }
+          const compiled = compiler.compileToC(code, options.compileArgs ?? []);
+          const compileMs = Math.round(performance.now() - compileStarted);
+          if (!compiled.ok) return failure(compileMs, takeOutput());
+          const translationUnits = compiled.files.map((file, index) => ({
+            path: `nim/unit-${String(index).padStart(3, "0")}.c`,
+            content: file.content
+          }));
+          const built = await toolchain();
+          onStatus(`compiling ${translationUnits.length} translation units\u2026`);
+          const buildStarted = performance.now();
+          let artifact;
+          try {
+            artifact = await compileTranslationUnits(built, {
+              translationUnits,
+              nimbase: await nimbase(),
+              onCompilerOutput: (raw) => onLog(stripAnsi2(raw), "clang")
+            });
+          } catch (error) {
+            return {
+              ok: false,
+              stdout: "",
+              stderr: "",
+              output: "",
+              // The failure carries clang's or the linker's own words, already stripped of the
+              // runtime's chatter.
+              errors: [stripAnsi2(error?.message ?? error)],
+              exitCode: null,
+              compileMs: Math.round(performance.now() - buildStarted),
+              runMs: null
+            };
+          }
+          const linkMs = Math.round(performance.now() - buildStarted);
+          onStatus("running\u2026");
+          const stdout = [];
+          const stderr = [];
+          const order = [];
+          const onOutput = runOptions.onOutput ?? options.onOutput ?? (() => {
+          });
+          const runStarted = performance.now();
+          const ran = await runArtifact(built, artifact, {
+            args: runOptions.args ?? options.args ?? [],
+            stdin: input,
+            onStdout: (chunk) => {
+              stdout.push(chunk);
+              order.push(chunk);
+              onOutput(chunk, "out");
+            },
+            onStderr: (chunk) => {
+              stderr.push(chunk);
+              order.push(chunk);
+              onOutput(chunk, "err");
+            }
+          });
+          return {
+            ok: ran.exitCode === 0,
+            stdout: stdout.join(""),
+            stderr: stderr.join(""),
+            output: order.join(""),
+            errors: [],
+            exitCode: ran.exitCode,
+            // `compileMs` is the whole build: Nim's codegen plus clang and the link, which is what a
+            // caller waiting for a result is actually waiting for.
+            compileMs: compileMs + linkMs,
+            runMs: Math.round(performance.now() - runStarted)
+          };
+        }
+      };
+    }
+    return { createCompiler: createCompiler2, TARGETS, targets: Object.values(TARGETS) };
+  }
+
+  // packages/nim-wasm/src/js-runtime.js
+  var BOOTSTRAP = `<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body>
+<script>
+(function () {
+  var SOURCE = 'nim-playground';
+  var send = function (kind, text) {
+    parent.postMessage({ source: SOURCE, kind: kind, text: text }, '*');
+  };
+  var format = function (values) {
+    return Array.prototype.map
+      .call(values, function (value) {
+        if (typeof value === 'string') return value;
+        try {
+          return JSON.stringify(value);
+        } catch (error) {
+          return String(value);
+        }
+      })
+      .join(' ');
+  };
+
+  // Nim's runtime writes to stdout through console.log and to stderr through console.error, so these
+  // are the two that matter; the rest are routed to stderr so nothing is silently lost.
+  console.log = function () { send('out', format(arguments)); };
+  console.info = console.log;
+  console.debug = console.log;
+  console.warn = function () { send('err', format(arguments)); };
+  console.error = function () { send('err', format(arguments)); };
+
+  window.onerror = function (message, source, line) {
+    send('err', String(message) + ' (line ' + line + ')');
+    return true;
+  };
+
+  window.addEventListener('message', function (event) {
+    var data = event.data;
+    if (!data || data.source !== SOURCE || data.kind !== 'run') return;
+    try {
+      var script = document.createElement('script');
+      // Appending the element is what runs it, and it runs synchronously, so the program has finished
+      // by the time the next line reports it.
+      script.textContent = data.text;
+      document.body.appendChild(script);
+    } catch (error) {
+      send('err', 'Error: ' + (error && error.message ? error.message : error));
+    }
+    send('done', '');
+  });
+
+  send('ready', '');
+})();
+<\/script>
+</body>
+</html>
+`;
+  var SOURCE = "nim-playground";
+  function executeJavaScript(js, { timeoutMs = 15e3, onStdout = () => {
+  }, onStderr = () => {
+  } } = {}) {
+    return new Promise((resolve) => {
+      const frame = document.createElement("iframe");
+      frame.setAttribute("sandbox", "allow-scripts");
+      frame.setAttribute("title", "Nim program output");
+      frame.style.display = "none";
+      frame.srcdoc = BOOTSTRAP;
+      const stdout = [];
+      const stderr = [];
+      const order = [];
+      let settled = false;
+      const finish = (failed2) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        window.removeEventListener("message", onMessage);
+        frame.remove();
+        resolve({
+          stdout: stdout.join("\n"),
+          stderr: stderr.join("\n"),
+          output: order.join("\n"),
+          failed: failed2
+        });
+      };
+      const timer = setTimeout(() => {
+        stderr.push(`Timed out after ${timeoutMs}ms waiting for the program to finish.`);
+        order.push(`Timed out after ${timeoutMs}ms waiting for the program to finish.`);
+        finish(true);
+      }, timeoutMs);
+      const onMessage = (event) => {
+        const data = event.data;
+        if (!data || data.source !== SOURCE || event.source !== frame.contentWindow) return;
+        if (data.kind === "ready") {
+          frame.contentWindow.postMessage({ source: SOURCE, kind: "run", text: js }, "*");
+          return;
+        }
+        if (data.kind === "out") {
+          stdout.push(data.text);
+          order.push(data.text);
+          onStdout(`${data.text}
+`);
+          return;
+        }
+        if (data.kind === "err") {
+          stderr.push(data.text);
+          order.push(data.text);
+          onStderr(`${data.text}
+`);
+          return;
+        }
+        if (data.kind === "done") finish(false);
+      };
+      window.addEventListener("message", onMessage);
+      document.body.appendChild(frame);
+    });
+  }
+
+  // packages/nim-wasm/src/nim-compile.js
   var NIM_CACHE_DIR = "/tmp/nimcache";
   var NIM_USER_FILE = "/tmp/user.nim";
   var NIM_OUTPUT_FILES = [NIM_USER_FILE, "/tmp/user", "/tmp/user.js"];
@@ -10685,7 +11130,12 @@ static __attribute__((unused)) int raise(int signum) {
     "-o:/tmp/user",
     NIM_USER_FILE
   ]);
-  var NIM_JS_COMPILE_ARGS = Object.freeze(["js", ...COMMON_ARGS, "-o:/tmp/user.js", NIM_USER_FILE]);
+  var NIM_JS_COMPILE_ARGS = Object.freeze([
+    "js",
+    ...COMMON_ARGS,
+    "-o:/tmp/user.js",
+    NIM_USER_FILE
+  ]);
   var C_FILE = /\.(?:c|cpp)$/;
   var listCache = (FS, cacheDir) => {
     try {
@@ -10709,6 +11159,43 @@ static __attribute__((unused)) int raise(int signum) {
       }
     }
   };
+  var withFlags = (args, extra) => {
+    if (!extra.length) return args;
+    const at = args.indexOf(NIM_USER_FILE);
+    return [...args.slice(0, at), ...extra, ...args.slice(at)];
+  };
+  function createCompilerCore({ FS, callMain, global = globalThis }) {
+    const compile2 = (source, args) => {
+      clearNimCache(FS);
+      global.__NIM_USER_CODE__ = source;
+      global.__NIM_USER_CODE_PENDING__ = source;
+      try {
+        return callMain([...args]);
+      } catch (error) {
+        return `threw: ${error?.message ?? error}`;
+      }
+    };
+    return {
+      /** Compile to the C files the `c` backend emitted, one per module. */
+      compileToC(source, compileArgs = []) {
+        const exitCode = compile2(source, withFlags(NIM_C_COMPILE_ARGS, compileArgs));
+        const files = collectGeneratedCFiles(FS);
+        return { files, exitCode, ok: exitCode === 0 && files.length > 0 };
+      },
+      /** Compile to the single JavaScript file the `js` backend emitted. */
+      compileToJs(source, compileArgs = []) {
+        const exitCode = compile2(source, withFlags(NIM_JS_COMPILE_ARGS, compileArgs));
+        let js = "";
+        try {
+          js = FS.readFile("/tmp/user.js", { encoding: "utf8" });
+        } catch {
+        }
+        return { js, exitCode, ok: exitCode === 0 && js.length > 0 };
+      }
+    };
+  }
+
+  // packages/nim-wasm/src/nim.js
   var loadScript = (src) => {
     if (typeof importScripts === "function") {
       try {
@@ -10726,29 +11213,29 @@ static __attribute__((unused)) int raise(int signum) {
       document.head.appendChild(script);
     });
   };
-  var compilerPromise = null;
-  function loadNimCompiler(options) {
-    if (!compilerPromise) {
-      compilerPromise = createNimCompiler(options).catch((error) => {
-        compilerPromise = null;
+  var compilers = /* @__PURE__ */ new Map();
+  function loadNimCompiler({ source, onStatus = () => {
+  } }) {
+    if (!compilers.has(source.key)) {
+      const pending = loadInBrowser({ source, onStatus }).catch((error) => {
+        compilers.delete(source.key);
         throw error;
       });
+      compilers.set(source.key, pending);
     }
-    return compilerPromise;
+    return compilers.get(source.key);
   }
-  async function createNimCompiler({ baseUrl, onLog = () => {
-  }, onStatus = () => {
-  } }) {
-    const base = new URL(baseUrl, location.href);
+  async function loadInBrowser({ source, onStatus }) {
     let settle;
     const ready = new Promise((resolve, reject) => {
       settle = { resolve, reject };
     });
+    const output = [];
     globalThis.Nim = {
-      locateFile: (file) => new URL(file, base).href,
+      locateFile: (file) => source.locateFile(file),
       noInitialRun: true,
-      print: (text) => onLog(text, "stdout"),
-      printErr: (text) => onLog(text, "stderr"),
+      print: (text) => output.push(text),
+      printErr: (text) => output.push(text),
       quit: (_status, toThrow) => {
         throw toThrow;
       },
@@ -10756,229 +11243,74 @@ static __attribute__((unused)) int raise(int signum) {
       onAbort: (what) => settle.reject(new Error(`Nim compiler aborted: ${what}`))
     };
     onStatus("loading the Nim compiler\u2026");
-    await loadScript(new URL("nim-bundle.js", base).href);
+    await loadScript(source.bundleUrl);
     await ready;
-    const FS = globalThis.FS;
-    const { callMain } = globalThis;
-    const compile2 = (nimSource, args) => {
-      clearNimCache(FS);
-      globalThis.__NIM_USER_CODE__ = nimSource;
-      globalThis.__NIM_USER_CODE_PENDING__ = nimSource;
-      try {
-        return callMain([...args]);
-      } catch (error) {
-        return `threw: ${error?.message ?? error}`;
-      }
-    };
+    const core = createCompilerCore({ FS: globalThis.FS, callMain: globalThis.callMain });
     return {
-      FS,
-      /** Compile Nim source to the C files the `c` backend emitted, one per module. */
-      compileToC(nimSource) {
-        const exitCode = compile2(nimSource, NIM_C_COMPILE_ARGS);
-        const files = collectGeneratedCFiles(FS);
-        return { files, exitCode, ok: exitCode === 0 && files.length > 0 };
-      },
-      /** Compile Nim source to the single JavaScript file the `js` backend emitted. */
-      compileToJs(nimSource) {
-        const exitCode = compile2(nimSource, NIM_JS_COMPILE_ARGS);
-        let js = "";
-        try {
-          js = FS.readFile("/tmp/user.js", { encoding: "utf8" });
-        } catch {
-        }
-        return { js, exitCode, ok: exitCode === 0 && js.length > 0 };
+      ...core,
+      /** The compiler's output since the last call, which is where its diagnostics are. */
+      takeOutput() {
+        const text = output.join("");
+        output.length = 0;
+        return text;
       }
     };
   }
 
-  // src/run-nim.js
-  var BACKENDS = Object.freeze({ JS: "nim", WASM: "nim-wasm" });
-  var ANSI2 = /\u001b\[[0-9;]*[A-Za-z]/g;
-  var stripAnsi2 = (text) => String(text ?? "").replace(ANSI2, "");
-  var unitPath = (index) => `nim/unit-${String(index).padStart(3, "0")}.c`;
-  function createRunner({
-    nimBaseUrl,
-    clangBaseUrl,
-    onStatus = () => {
-    },
-    onCompilerLog = () => {
-    },
-    onProgress = () => {
-    },
-    onOutput = () => {
-    }
-  }) {
-    let nimbasePromise = null;
-    let diagnostics = [];
-    const nimLog = (text) => {
-      const clean = stripAnsi2(text);
-      if (clean.trim()) diagnostics.push(clean);
-      onCompilerLog(clean);
-    };
-    const loadNimbase = () => {
-      if (!nimbasePromise) {
-        const url = new URL("nimbase.h", new URL(nimBaseUrl, location.href));
-        nimbasePromise = fetch(url).then((response) => {
-          if (!response.ok) throw new Error(`Could not load nimbase.h: ${response.status}`);
-          return response.text();
-        });
-      }
-      return nimbasePromise;
-    };
-    const compiler = () => loadNimCompiler({ baseUrl: nimBaseUrl, onLog: nimLog, onStatus });
-    const nimFailure = ({ backend, started, nimMs, cFiles = 0 }) => ({
-      ok: false,
-      phase: "nim",
-      backend,
-      errors: diagnostics.length ? diagnostics : ["The Nim compiler produced no output."],
-      output: diagnostics.join("\n"),
-      exitCode: null,
-      cFiles,
-      nimMs,
-      totalMs: performance.now() - started
-    });
-    return {
-      async run(source, { backend = BACKENDS.WASM, args = [], stdin = "" } = {}) {
-        const started = performance.now();
-        diagnostics = [];
-        const useJs = backend === BACKENDS.JS;
-        onStatus(`compiling Nim to ${useJs ? "JavaScript" : "C"}\u2026`);
-        const nim = await compiler();
-        const nimStarted = performance.now();
-        const generated = useJs ? nim.compileToJs(source) : nim.compileToC(source);
-        const nimMs = performance.now() - nimStarted;
-        if (!generated.ok) {
-          return nimFailure({ backend, started, nimMs, cFiles: generated.files?.length ?? 0 });
-        }
-        if (useJs) {
-          return {
-            ok: true,
-            phase: "compiled",
-            backend,
-            // One readable file, worth showing. The C route's output is eight mangled translation
-            // units, which is not.
-            js: generated.js,
-            compiledCode: generated.js,
-            jsBytes: generated.js.length,
-            nimMs,
-            compileMs: 0,
-            totalMs: performance.now() - started
-          };
-        }
-        const translationUnits = generated.files.map((file, index) => ({
-          path: unitPath(index),
-          content: file.content
-        }));
-        onStatus("loading the Clang toolchain\u2026");
-        const toolchain = await loadClangToolchain({ baseUrl: clangBaseUrl, onProgress });
-        onStatus(`compiling ${translationUnits.length} translation units\u2026`);
-        const compileStarted = performance.now();
-        let artifact;
-        try {
-          artifact = await compileTranslationUnits(toolchain, {
-            translationUnits,
-            nimbase: await loadNimbase(),
-            onCompilerOutput: (raw) => onCompilerLog(stripAnsi2(raw))
-          });
-        } catch (error) {
-          return {
-            ok: false,
-            phase: "clang",
-            backend,
-            errors: [stripAnsi2(error?.message ?? error)],
-            output: "",
-            exitCode: null,
-            cFiles: translationUnits.length,
-            nimMs,
-            compileMs: performance.now() - compileStarted,
-            totalMs: performance.now() - started
-          };
-        }
-        const compileMs = performance.now() - compileStarted;
-        onStatus("running\u2026");
-        const stdout = [];
-        const stderr = [];
-        const order = [];
-        const runStarted = performance.now();
-        const result = await runArtifact(toolchain, artifact, {
-          args,
-          stdin,
-          onStdout: (chunk) => {
-            stdout.push(chunk);
-            order.push(chunk);
-            onOutput(chunk, "out");
-          },
-          onStderr: (chunk) => {
-            stderr.push(chunk);
-            order.push(chunk);
-            onOutput(chunk, "err");
-          }
-        });
-        const runMs = performance.now() - runStarted;
-        return {
-          ok: result.exitCode === 0,
-          phase: "run",
-          backend,
-          stdout: stdout.join(""),
-          stderr: stderr.join(""),
-          // What a terminal would have shown: both streams in the order the program wrote them.
-          output: order.join(""),
-          exitCode: result.exitCode,
-          errors: [],
-          cFiles: translationUnits.length,
-          artifactBytes: artifact.bytes?.byteLength ?? artifact.bytes?.length ?? 0,
-          nimMs,
-          compileMs,
-          runMs,
-          totalMs: performance.now() - started
-        };
-      }
-    };
-  }
+  // packages/nim-wasm/src/index.js
+  var api = createApi({ packaged: null, loadNimCompiler, executeJavaScript });
+  var createCompiler = api.createCompiler;
+  var { TARGETS: TARGETS2, targets } = api;
 
   // src/nim-worker.js
-  var runner = null;
+  var compilers2 = /* @__PURE__ */ new Map();
   var running = false;
   var post = (message) => self.postMessage(message);
-  var failed = (backend, phase, errors) => ({
+  var failed = (target, phase, errors) => ({
     ok: false,
     phase,
-    backend,
+    target,
     errors,
     output: ""
   });
-  self.onmessage = async (event) => {
-    const message = event.data;
-    if (!message || message.type !== "run") return;
-    if (running) {
-      post({
-        kind: "result",
-        result: failed(message.backend, "busy", ["A run is already in progress."])
-      });
-      return;
-    }
-    running = true;
-    try {
-      if (!runner) {
-        runner = createRunner({
-          nimBaseUrl: message.nimBaseUrl,
+  var compilerFor = async (message, target) => {
+    if (!compilers2.has(target)) {
+      compilers2.set(
+        target,
+        await createCompiler({
+          target,
+          baseUrl: message.nimBaseUrl,
           clangBaseUrl: message.clangBaseUrl,
+          args: message.args ?? [],
           onStatus: (text) => post({ kind: "status", text }),
-          onCompilerLog: (text) => post({ kind: "log", text }),
+          onLog: (text) => post({ kind: "log", text }),
           onProgress: (value) => post({ kind: "progress", value }),
           // The program's output as it is written, so the page can show a slow program while it
           // runs instead of waiting for the whole thing.
           onOutput: (text, stream) => post({ kind: stream, text })
-        });
-      }
-      const result = await runner.run(message.source, {
-        backend: message.backend,
+        })
+      );
+    }
+    return compilers2.get(target);
+  };
+  self.onmessage = async (event) => {
+    const message = event.data;
+    if (!message || message.type !== "run") return;
+    if (running) {
+      post({ kind: "result", result: failed(message.target, "busy", ["A run is already in progress."]) });
+      return;
+    }
+    running = true;
+    try {
+      const target = message.target;
+      const compiler = await compilerFor(message, target);
+      const result = await compiler.run(message.source, message.stdin, {
         args: message.args,
-        stdin: message.stdin
+        execute: target === "js" ? false : void 0
       });
       post({ kind: "result", result });
     } catch (error) {
-      post({ kind: "result", result: failed(message.backend, "worker", [String(error?.message ?? error)]) });
+      post({ kind: "result", result: failed(message.target, "worker", [String(error?.message ?? error)]) });
     } finally {
       running = false;
     }

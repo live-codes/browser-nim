@@ -1,4 +1,4 @@
-// src/nim-js-runtime.js
+// packages/nim-wasm/src/js-runtime.js
 var BOOTSTRAP = `<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"></head>
@@ -57,7 +57,7 @@ var BOOTSTRAP = `<!DOCTYPE html>
 </html>
 `;
 var SOURCE = "nim-playground";
-function runProgram(js, { timeoutMs = 15e3, onStdout = () => {
+function executeJavaScript(js, { timeoutMs = 15e3, onStdout = () => {
 }, onStderr = () => {
 } } = {}) {
   return new Promise((resolve) => {
@@ -138,23 +138,17 @@ function createPlayground({
   };
   let worker = null;
   let pending = null;
-  const settle = (result, { stripProgram = false } = {}) => {
+  const settle = (result) => {
     const waiting = pending;
     pending = null;
-    if (!waiting) return;
-    if (stripProgram) {
-      const { js, ...rest } = result;
-      waiting.resolve(rest);
-      return;
-    }
-    waiting.resolve(result);
+    waiting?.resolve(result);
   };
   const fail = (error) => {
     const waiting = pending;
     settle({
       ok: false,
       phase: "worker",
-      backend: waiting?.backend,
+      target: waiting?.target,
       errors: [String(error?.message ?? error)],
       output: ""
     });
@@ -169,14 +163,14 @@ function createPlayground({
     const result = data.result;
     const waiting = pending;
     if (!waiting) return;
-    if (result.js) {
+    if (waiting.target === "js") {
       onStatus("running\u2026");
       const runStarted = performance.now();
-      const ran = await runProgram(result.js, {
+      const ran = await executeJavaScript(result.compiledCode, {
         onStdout: (text) => onOutput(text, "out"),
         onStderr: (text) => onOutput(text, "err")
       });
-      const merged = {
+      settle({
         ...result,
         phase: "run",
         ok: !ran.failed,
@@ -187,8 +181,7 @@ function createPlayground({
         errors: ran.failed && ran.stderr ? [ran.stderr] : [],
         runMs: performance.now() - runStarted,
         totalMs: performance.now() - waiting.started
-      };
-      settle(merged, { stripProgram: true });
+      });
       return;
     }
     settle(result);
@@ -201,21 +194,14 @@ function createPlayground({
     return worker;
   };
   return {
-    async run(source, { backend, args = [], stdin = "" } = {}) {
+    /** `target` is one of `@live-codes/nim-wasm`'s, e.g. `wasm` or `js`. */
+    async run(source, { target, args = [], stdin = "" } = {}) {
       if (pending) throw new Error("A run is already in progress.");
       const started = performance.now();
-      const result = await new Promise((resolve) => {
-        pending = { resolve, backend, started };
-        ensureWorker().postMessage({
-          type: "run",
-          source,
-          backend,
-          args,
-          stdin,
-          ...assets
-        });
+      return new Promise((resolve) => {
+        pending = { resolve, target, started };
+        ensureWorker().postMessage({ type: "run", source, target, args, stdin, ...assets });
       });
-      return result;
     },
     /**
      * Give up on the current run.
@@ -231,7 +217,7 @@ function createPlayground({
       settle({
         ok: false,
         phase: "stopped",
-        backend: waiting.backend,
+        target: waiting.target,
         errors: ["Stopped."],
         output: "",
         totalMs: performance.now() - waiting.started
@@ -259,6 +245,9 @@ echo "5! = ", factorial(5)
 var LANGUAGES = Object.freeze({
   "nim-wasm": {
     label: "Nim (WebAssembly)",
+    // Which target of `@live-codes/nim-wasm` this language is. The ids differ on purpose: the package
+    // names a backend, and the page names a language to offer.
+    target: "wasm",
     description: "Compiled to C, then to WebAssembly with the Clang toolchain. Real Nim semantics.",
     samples: {
       "Hello, factorial, and a sorted seq": SHARED,
@@ -298,6 +287,7 @@ echo "unreachable"
   },
   nim: {
     label: "Nim (JavaScript)",
+    target: "js",
     description: "Compiled to JavaScript and run in a sandboxed frame. Can reach the page.",
     samples: {
       "Hello, factorial, and a sorted seq": SHARED,
