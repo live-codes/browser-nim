@@ -57,7 +57,9 @@ var BOOTSTRAP = `<!DOCTYPE html>
 </html>
 `;
 var SOURCE = "nim-playground";
-function runProgram(js, { timeoutMs = 15e3 } = {}) {
+function runProgram(js, { timeoutMs = 15e3, onStdout = () => {
+}, onStderr = () => {
+} } = {}) {
   return new Promise((resolve) => {
     const frame = document.createElement("iframe");
     frame.setAttribute("sandbox", "allow-scripts");
@@ -96,11 +98,15 @@ function runProgram(js, { timeoutMs = 15e3 } = {}) {
       if (data.kind === "out") {
         stdout.push(data.text);
         order.push(data.text);
+        onStdout(`${data.text}
+`);
         return;
       }
       if (data.kind === "err") {
         stderr.push(data.text);
         order.push(data.text);
+        onStderr(`${data.text}
+`);
         return;
       }
       if (data.kind === "done") finish(false);
@@ -122,6 +128,8 @@ function createPlayground({
   onCompilerLog = () => {
   },
   onProgress = () => {
+  },
+  onOutput = () => {
   }
 }) {
   const assets = {
@@ -156,6 +164,7 @@ function createPlayground({
     if (data.kind === "status") return onStatus(data.text);
     if (data.kind === "log") return onCompilerLog(data.text);
     if (data.kind === "progress") return onProgress(data.value);
+    if (data.kind === "out" || data.kind === "err") return onOutput(data.text, data.kind);
     if (data.kind !== "result") return;
     const result = data.result;
     const waiting = pending;
@@ -163,7 +172,10 @@ function createPlayground({
     if (result.js) {
       onStatus("running\u2026");
       const runStarted = performance.now();
-      const ran = await runProgram(result.js);
+      const ran = await runProgram(result.js, {
+        onStdout: (text) => onOutput(text, "out"),
+        onStderr: (text) => onOutput(text, "err")
+      });
       const merged = {
         ...result,
         phase: "run",

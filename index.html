@@ -237,6 +237,24 @@
     logEl.textContent += text;
   };
 
+  // The program's output as it arrives. A chatty program can produce thousands of chunks, so the pane
+  // is redrawn once a frame rather than once a chunk.
+  let streamed = '';
+  let drawQueued = false;
+  const drawStreamed = () => {
+    if (drawQueued) return;
+    drawQueued = true;
+    requestAnimationFrame(() => {
+      drawQueued = false;
+      outputEl.textContent = streamed;
+      outputEl.scrollTop = outputEl.scrollHeight;
+    });
+  };
+  const appendOutput = (text) => {
+    streamed += text;
+    drawStreamed();
+  };
+
   const playground = createPlayground({
     // Both toolchains are served from this page's own origin by serve.mjs. The worker that compiles
     // with them is built next to the page bundle.
@@ -246,6 +264,7 @@
       statusTextEl.textContent = text;
     },
     onCompilerLog: (text) => appendLog(text),
+    onOutput: (text) => appendOutput(text),
     onProgress: (value) => {
       progressEl.textContent = `toolchain ${(value * 100).toFixed(0)}%`;
     }
@@ -261,6 +280,7 @@
     // Reset the panes, including the error styling a previous run's failure may have left behind.
     outputEl.className = '';
     outputEl.innerHTML = '<span class="empty">compiling…</span>';
+    streamed = '';
     logEl.textContent = '';
     errorsEl.textContent = '';
     $('logWrap').hidden = true;
@@ -278,10 +298,12 @@
         $('errorWrap').hidden = false;
       }
 
-      // The program's own output, both streams in the order they were written.
+      // Streaming has already drawn it, so this only makes the pane authoritative — the result is what
+      // the program printed, and the pane should not be able to disagree with it.
+      streamed = result.output ?? streamed;
       outputEl.innerHTML = '';
-      if (result.output) {
-        outputEl.textContent = result.output;
+      if (streamed) {
+        outputEl.textContent = streamed;
       } else if (!result.errors?.length) {
         outputEl.innerHTML = '<span class="empty">(no output)</span>';
       }

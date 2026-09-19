@@ -10804,6 +10804,8 @@ static __attribute__((unused)) int raise(int signum) {
     onCompilerLog = () => {
     },
     onProgress = () => {
+    },
+    onOutput = () => {
     }
   }) {
     let nimbasePromise = null;
@@ -10904,10 +10906,12 @@ static __attribute__((unused)) int raise(int signum) {
           onStdout: (chunk) => {
             stdout.push(chunk);
             order.push(chunk);
+            onOutput(chunk, "out");
           },
           onStderr: (chunk) => {
             stderr.push(chunk);
             order.push(chunk);
+            onOutput(chunk, "err");
           }
         });
         const runMs = performance.now() - runStarted;
@@ -10961,7 +10965,10 @@ static __attribute__((unused)) int raise(int signum) {
           clangBaseUrl: message.clangBaseUrl,
           onStatus: (text) => post({ kind: "status", text }),
           onCompilerLog: (text) => post({ kind: "log", text }),
-          onProgress: (value) => post({ kind: "progress", value })
+          onProgress: (value) => post({ kind: "progress", value }),
+          // The program's output as it is written, so the page can show a slow program while it
+          // runs instead of waiting for the whole thing.
+          onOutput: (text, stream) => post({ kind: stream, text })
         });
       }
       const result = await runner.run(message.source, {

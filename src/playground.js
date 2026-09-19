@@ -1,5 +1,9 @@
 // The page side: owns the worker that compiles, and the frame that runs what it compiles.
 //
+// Program output is delivered twice over: `onOutput` reports each chunk as the program writes it, and
+// the final result carries the whole thing. A caller draws the first and trusts the second, since the
+// stream is what makes a slow program watchable and the result is what makes the pane correct.
+//
 // The split is forced by one thing — the JavaScript target's program needs a document, and a worker has
 // none — and it pays for itself twice over. Compiling leaves the page's thread, so neither the Nim
 // compiler nor the Clang runtime can freeze it; and a build that runs away can be killed, because
@@ -19,7 +23,8 @@ export function createPlayground({
 	clangBaseUrl,
 	onStatus = () => {},
 	onCompilerLog = () => {},
-	onProgress = () => {}
+	onProgress = () => {},
+	onOutput = () => {}
 }) {
 	// Resolved here because a worker resolves relative URLs against its own script, not the page.
 	const assets = {
@@ -60,6 +65,8 @@ export function createPlayground({
 		if (data.kind === 'status') return onStatus(data.text);
 		if (data.kind === 'log') return onCompilerLog(data.text);
 		if (data.kind === 'progress') return onProgress(data.value);
+		// The program's output, whether it came from the worker's WASI program or the frame below.
+		if (data.kind === 'out' || data.kind === 'err') return onOutput(data.text, data.kind);
 		if (data.kind !== 'result') return;
 
 		const result = data.result;
@@ -70,7 +77,10 @@ export function createPlayground({
 		if (result.js) {
 			onStatus('running…');
 			const runStarted = performance.now();
-			const ran = await runProgram(result.js);
+			const ran = await runProgram(result.js, {
+				onStdout: (text) => onOutput(text, 'out'),
+				onStderr: (text) => onOutput(text, 'err')
+			});
 			const merged = {
 				...result,
 				phase: 'run',

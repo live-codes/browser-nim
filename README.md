@@ -37,10 +37,11 @@ nim
 
 **All of that runs in a worker, except running the JavaScript target's program.** The Clang runtime
 blocks whatever thread it holds for the length of a compile, and the Nim compiler blocks too, so both
-happen off the page: the page stays responsive, and a build that will not finish can be stopped by
-discarding the worker. The JavaScript target's program is the exception because it needs a document —
-and a document is the reason to use that target — so it runs in a frame on the page, which also means a
-program of its own that loops forever still hangs the tab and no stop button can reach it.
+happen off the page: the page stays responsive, a program's output is posted back as it is written so a
+slow one can be watched while it runs, and a build that will not finish can be stopped by discarding the
+worker. The JavaScript target's program is the exception because it needs a document — and a document is
+the reason to use that target — so it runs in a frame on the page, which also means a program of its own
+that loops forever still hangs the tab and no stop button can reach it.
 
 The modules, by stage:
 
@@ -284,7 +285,9 @@ The worker split was checked the same way, because it is the kind of change that
 nothing: a 50 ms timer was left running in the page while a build was in flight, and it kept firing —
 around 60 ticks across a 3.5 s `nim-wasm` build, which is the whole build, so the page's thread was free
 for all of it. Stopping a build was checked against a program that never ends, and stopping was followed
-by another run to confirm the worker comes back.
+by another run to confirm the worker comes back. Streaming was checked by reading the output pane
+mid-run: with a program that keeps printing, the pane held 22 lines while the run was still in progress,
+and the finished pane matched the program's output exactly once over.
 
 First load is ~11 MB of Nim assets. The Clang assets, ~29 MB, load on the first run that needs them, and
 the runtime is cached per asset URL — so it is paid once per worker, and a worker restarted after a stop
@@ -301,19 +304,15 @@ The `nim` target touches none of it: one compile, and a frame to run the result 
 
 ## Next steps
 
-1. **Stream the program's output.** The worker posts one result, so a program that runs for a while shows
-   nothing until it finishes — the spinner above ran for 25 s with an empty output pane. The plumbing is
-   already there: `runArtifact` takes `onStdout`/`onStderr`, and they only need to post as they fire
-   rather than accumulate to the end.
-2. **Build and pin `nim.wasm` in-house.** `npm run assets:nim` fetches a third-party prebuilt bundle
+1. **Build and pin `nim.wasm` in-house.** `npm run assets:nim` fetches a third-party prebuilt bundle
    from someone's GitHub Pages. It works and is recorded in `asset-receipts.json`, but it should be
    built from the Nim sources and pinned the way the Clang assets are, ideally as a versioned
    `@live-codes` package. One compiler instance serves both targets, so that is one artifact to pin.
-3. **Wire both into LiveCodes as separate language modules** — `nim` and `nim-wasm`, sharing one worker
+2. **Wire both into LiveCodes as separate language modules** — `nim` and `nim-wasm`, sharing one worker
    and one compiler instance, following the `lang-cpp-wasm-script.ts` shim. Not one language with a
    toggle: their sample sets, capabilities and error output differ, and a shared picker would have to
    misrepresent at least one of them.
-4. **Trim the `nim-wasm` output.** `-d:release` with `--compileOnly` still emits ~130 KB of wasm for a
+3. **Trim the `nim-wasm` output.** `-d:release` with `--compileOnly` still emits ~130 KB of wasm for a
    hello world, where the JavaScript target emits 7 – 23 KB. Link with `--gc-sections` (the Objective-C
    driver already does) and consider `-d:danger` for a playground.
 
@@ -337,10 +336,13 @@ The `nim` target touches none of it: one compile, and a frame to run the result 
 - **A runaway program cannot be interrupted.** It runs in a frame on the page because it needs a
   document, so it holds the page's thread and the stop button has nothing to terminate. This is the one
   case the worker split does not cover.
+- **Its output cannot be shown while it runs**, for the same reason: the program owns the thread, so
+  nothing on the page can paint until it finishes. The chunks are delivered as the frame posts them, but
+  they are queued behind the program. A `nim` program that yields to the event loop will stream; one that
+  loops will not.
 
 **Both**
 
-- **Output is not streamed** — see next step 1.
 - **First load is heavy**: ~11 MB of Nim assets, plus a 475 KB worker bundle on the first run. The Clang
   *assets*, ~29 MB, are only fetched when the WebAssembly target is actually used; the JavaScript target
   never instantiates the toolchain. There is no integrity checking on the Nim assets beyond the recorded

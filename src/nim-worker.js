@@ -46,7 +46,10 @@ self.onmessage = async (event) => {
 				clangBaseUrl: message.clangBaseUrl,
 				onStatus: (text) => post({ kind: 'status', text }),
 				onCompilerLog: (text) => post({ kind: 'log', text }),
-				onProgress: (value) => post({ kind: 'progress', value })
+				onProgress: (value) => post({ kind: 'progress', value }),
+				// The program's output as it is written, so the page can show a slow program while it
+				// runs instead of waiting for the whole thing.
+				onOutput: (text, stream) => post({ kind: stream, text })
 			});
 		}
 

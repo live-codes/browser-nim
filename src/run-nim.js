@@ -32,7 +32,8 @@ export function createRunner({
 	clangBaseUrl,
 	onStatus = () => {},
 	onCompilerLog = () => {},
-	onProgress = () => {}
+	onProgress = () => {},
+	onOutput = () => {}
 }) {
 	let nimbasePromise = null;
 
@@ -148,10 +149,14 @@ export function createRunner({
 				onStdout: (chunk) => {
 					stdout.push(chunk);
 					order.push(chunk);
+					// Passed on as it arrives, so a slow program can be watched while it runs. The whole
+					// thing still comes back in the result, which is what a caller renders at the end.
+					onOutput(chunk, 'out');
 				},
 				onStderr: (chunk) => {
 					stderr.push(chunk);
 					order.push(chunk);
+					onOutput(chunk, 'err');
 				}
 			});
 			const runMs = performance.now() - runStarted;

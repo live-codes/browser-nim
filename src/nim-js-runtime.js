@@ -82,9 +82,12 @@ const SOURCE = 'nim-playground';
  * @param {string} js - the program, as `nim js` emitted it.
  * @param {object} [options]
  * @param {number} [options.timeoutMs] - how long to wait for the program to report that it finished.
+ * @param {(text: string) => void} [options.onStdout] - each line as it arrives, newline included, so
+ *   that concatenating them reproduces `stdout` exactly.
+ * @param {(text: string) => void} [options.onStderr] - the same for stderr.
  * @returns {Promise<{stdout: string, stderr: string, output: string, failed: boolean}>}
  */
-export function runProgram(js, { timeoutMs = 15000 } = {}) {
+export function runProgram(js, { timeoutMs = 15000, onStdout = () => {}, onStderr = () => {} } = {}) {
 	return new Promise((resolve) => {
 		const frame = document.createElement('iframe');
 		frame.setAttribute('sandbox', 'allow-scripts');
@@ -132,11 +135,13 @@ export function runProgram(js, { timeoutMs = 15000 } = {}) {
 			if (data.kind === 'out') {
 				stdout.push(data.text);
 				order.push(data.text);
+				onStdout(`${data.text}\n`);
 				return;
 			}
 			if (data.kind === 'err') {
 				stderr.push(data.text);
 				order.push(data.text);
+				onStderr(`${data.text}\n`);
 				return;
 			}
 			if (data.kind === 'done') finish(false);
