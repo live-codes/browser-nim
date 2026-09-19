@@ -106,8 +106,8 @@ export async function createNodeNimCompiler({ assetDir = NIM_ASSET_DIR } = {}) {
 
 	return {
 		/** Compile to the C files the `c` backend emits, one per module. */
-		compileToC(source) {
-			const exitCode = compile(source, NIM_C_COMPILE_ARGS);
+		compileToC(source, { args = NIM_C_COMPILE_ARGS } = {}) {
+			const exitCode = compile(source, args);
 			const files = collectGeneratedCFiles(context.FS);
 			return {
 				files,

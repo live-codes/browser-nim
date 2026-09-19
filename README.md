@@ -95,7 +95,42 @@ What it costs is fidelity, and the gap is wider than "a little slower":
 Neither target is a subset of the other, which is why both are offered rather than one replacing the
 other.
 
-### Reusing `@live-codes/clang-wasm` rather than shipping a second compiler
+### What the WebAssembly output could be trimmed to
+
+`npm run measure:size` builds one sample every way it can be built and reports the sizes, so the numbers
+below are reproducible rather than remembered. Measured against a `nim-wasm` hello-world — 8 translation
+units, 129 KB as it stands:
+
+| link line | | Nim flags | |
+| --- | --- | --- | --- |
+| the runtime's own | 129 KB | `-d:release` + orc (current) | 129 KB |
+| `--gc-sections` | 129 KB | `--mm:arc` | 123 KB |
+| that, without `--export-dynamic` | 128 KB | `--panics:on` | 127 KB |
+| that, with `--strip-all` | **38 KB** | `-d:danger` | 117 KB |
+| | | `-d:danger --mm:arc` | 114 KB |
+
+**Only one lever is worth anything, and it is not enough to take.** `--strip-all` cuts 70%, because most
+of the module is the symbol table rather than code — but the artifact never crosses the network: it is
+built in the worker and instantiated there. So the win is a smaller number in the UI and a little less
+memory, against hand-rolling the runtime's compile-each and link line and taking on the drift that comes
+with a private copy of something upstream owns. If that size ever matters, because an artifact starts
+being exported or downloaded, the fix belongs upstream as an option on the runtime's `link()`, so every
+driver gets it and none of them owns a copy.
+
+The Nim-side flags are all small and all cost something, which is why the current combination stays:
+
+- **`-d:danger` buys 9% and gives up the checks.** On a program that divides by zero it prints `1048544`
+  and exits 0, where `-d:release` prints
+  `fatal.nim(53) sysFatal Error: unhandled exception: division by zero [DivByZeroDefect]`. A playground
+  that answers a user's mistake with a plausible-looking wrong number is worse than a big module — this
+  is the same check that caught the overflow in the runaway-program sample above.
+- **`--panics:on` buys 2%** and turns defects into aborts, losing the traceback.
+- **`--mm:arc` buys 5%** and drops cycle collection, which is a memory-management change for a rounding
+  error.
+
+And `--gc-sections` — which an earlier version of this file recommended — saves nothing at all while
+`--export-dynamic` is in the line, so it is not worth asking for either.
+
 
 `src/clang-build.js` builds on the package's low-level entry, `createToolchain`, rather than on
 `createCompiler(...).run(code)`. The reason is one option:
@@ -317,9 +352,6 @@ The `nim` target touches none of it: one compile, and a frame to run the result 
    and one compiler instance, following the `lang-cpp-wasm-script.ts` shim. Not one language with a
    toggle: their sample sets, capabilities and error output differ, and a shared picker would have to
    misrepresent at least one of them.
-3. **Trim the `nim-wasm` output.** `-d:release` with `--compileOnly` still emits ~130 KB of wasm for a
-   hello world, where the JavaScript target emits 7 – 23 KB. Link with `--gc-sections` (the Objective-C
-   driver already does) and consider `-d:danger` for a playground.
 
 ## Known limitations
 

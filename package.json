@@ -11,6 +11,7 @@
     "bundle": "esbuild vendor-entry.js --bundle --format=esm --outfile=vendor/nim-playground.js && esbuild src/nim-worker.js --bundle --format=iife --outfile=vendor/nim-worker.js",
     "setup": "npm run assets:nim && npm run assets:clang && npm run bundle",
     "start": "node serve.mjs",
+    "measure:size": "node scripts/measure-wasm-size.mjs",
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
