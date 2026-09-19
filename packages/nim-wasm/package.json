@@ -25,6 +25,7 @@
     "bin",
     "scripts",
     "dist",
+    "docs",
     "assets",
     "THIRD-PARTY-NOTICES.md"
   ],

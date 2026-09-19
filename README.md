@@ -339,15 +339,16 @@ The `nim` target touches none of it: one compile, and a frame to run the result 
 
 ## Next steps
 
-1. **Build `nim.wasm` in-house.** It is pinned (`nim-assets.lock.json`) but still a third-party prebuilt
-   bundle, and building it here is not the one-command exercise the upstream README suggests. It needs
-   Emscripten, a Nim checkout at 2.2.4, and a two-stage build of the compiler for `--cpu:wasm32` — and
-   then the two patches that make the result usable in a browser at all, both of which are the upstream
-   project's own work: the standard library has to be embedded in the loader as a base64 map (337 files,
-   `/lib/system/jssys.nim` among them), because the wasm compiler has no real filesystem to read `/lib`
-   from, and the loader has to be patched with the hook that writes submitted source into that in-memory
-   filesystem — without it there is no way to hand the compiler a program. So this is a small build
-   pipeline to own, not a flag to add, which is why the pin came first.
+1. **Building `nim.wasm` in-house is documented, not done.** It is pinned
+   (`packages/nim-wasm/src/asset-receipts.js`) but still a third-party prebuilt, and building it here is
+   not the one-command exercise the upstream README suggests: it needs Emscripten, a Nim checkout at
+   2.2.4, a two-stage wasm32 build of the compiler, and then the two patches that make the result usable
+   in a browser at all — the standard library embedded in the loader as a base64 map, and the hook that
+   writes submitted source into the compiler's in-memory filesystem. So the decision is to own the pin
+   rather than the pipeline, and
+   [`packages/nim-wasm/docs/ASSETS.md`](packages/nim-wasm/docs/ASSETS.md) records where the bytes come
+   from, how they were built, and exactly how to replace or re-pin them. That would be the file to start
+   from if they ever have to change for a reason of our own.
 2. **Wire both into LiveCodes as separate language modules** — `nim` and `nim-wasm`, sharing one worker
    and one compiler instance, following the `lang-cpp-wasm-script.ts` shim. Not one language with a
    toggle: their sample sets, capabilities and error output differ, and a shared picker would have to

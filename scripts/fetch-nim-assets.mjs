@@ -77,9 +77,13 @@ for (const name of names) {
 
 if (updating) {
 	// Source, not data: the receipts live in a module the package imports, so a re-pin is a small edit
-	// somebody reads rather than a file written behind their back.
+	// somebody reads rather than a file written behind their back. Printed in the shape that file is
+	// written in, so replacing the object is a one-line diff.
+	const receipts = Object.entries(fresh)
+		.map(([name, receipt]) => `\t'${name}': {\n\t\tbytes: ${receipt.bytes},\n\t\tsha256: '${receipt.sha256}'\n\t}`)
+		.join(',\n');
 	console.log('\nReceipts as they are now, for packages/nim-wasm/src/asset-receipts.js:\n');
-	console.log(`export const ASSET_RECEIPTS = Object.freeze(${JSON.stringify(fresh, null, '\t')});`);
+	console.log(`export const ASSET_RECEIPTS = Object.freeze({\n${receipts}\n});`);
 } else {
 	console.log(
 		`\n${names.length} asset(s) verified against the pin` +

@@ -120,7 +120,8 @@ The compiler ships inside the package: about 11 MB of `nim.wasm`, its loader and
 **third-party prebuilt** — Nim 2.2.4 compiled to wasm by another project — so they are pinned by
 SHA-256 and provenance in [`src/asset-receipts.js`](./src/asset-receipts.js), and every read is checked
 against that pin, which names the expected and actual digests when it fails. `THIRD-PARTY-NOTICES.md`
-says what is whose.
+says what is whose, and [`docs/ASSETS.md`](./docs/ASSETS.md) records where the bytes came from, how they
+were built, and how to replace or re-pin them.
 
 In a browser those files have to be served, and `nim-wasm-copy-assets` copies them — with a receipt file
 for its own bytes — into a directory you already serve.
