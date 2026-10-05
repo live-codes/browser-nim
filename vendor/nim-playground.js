@@ -304,6 +304,30 @@ setBody("<p>Written by Nim, rendered by the browser</p>")
 echo "the frame's body now holds: ", bodyHtmlAfter("")
 echo "and JSON.stringify, from Nim: ", toJson("hello")
 `,
+      "Building a page with the dom module": `import dom
+
+# The frame this runs in has a document, so this program builds a small page and then reads it back.
+document.title = "Nim and the DOM"
+
+let heading = document.createElement("h1")
+heading.innerText = "Written by Nim"
+heading.setAttribute("data-from", "nim")
+document.body.appendChild(heading)
+
+let list = document.createElement("ul")
+for i in 1..3:
+  let item = document.createElement("li")
+  item.innerText = "item " & $i
+  list.appendChild(item)
+list.appendChild(document.createTextNode(" and a text node"))
+document.body.appendChild(list)
+
+echo "title: ", document.title
+echo "h1: ", document.querySelector("h1").innerText
+echo "attribute: ", document.querySelector("h1").getAttribute("data-from")
+echo "missing element is nil: ", document.getElementById("nope").isNil
+echo "items: ", document.querySelectorAll("li").len
+`,
       "A runtime error, to see how it is reported": `proc divide(a, b: int): int = a div b
 
 echo "about to divide by zero"

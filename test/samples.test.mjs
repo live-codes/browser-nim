@@ -33,6 +33,9 @@ const EXPECTATIONS = {
 		// to reach, and that is what this can assert here — the sample is verified for real in the browser,
 		// where the page runs it in a frame.
 		'Calling into JavaScript': { contains: ['document is not defined'] },
+		// Browser-only for the same reason, and a wider slice of the dom module than the sample above:
+		// verified for real in the browser, where the frame supplies the document.
+		'Building a page with the dom module': { contains: ['document is not defined'] },
 		'A runtime error, to see how it is reported': { contains: ['division by zero'] }
 	}
 };
