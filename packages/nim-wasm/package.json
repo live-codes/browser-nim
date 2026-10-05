@@ -36,6 +36,9 @@
     "build:iife": "node scripts/build-iife.mjs",
     "test": "node --test \"test/*.test.mjs\""
   },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  },
   "dependencies": {
     "@live-codes/clang-wasm": "^0.2.0"
   },
