@@ -149,6 +149,39 @@ test('the two targets can be used side by side', async () => {
 	assert.equal(results[1].stdout, 'wasm\n');
 });
 
+test('wasm: stdin, stdout and stderr are the real thing', async () => {
+	const compiler = await createCompiler({ target: 'wasm' });
+
+	// One read, which is the shape a panel handing over a text box gets.
+	const one = await compiler.run(
+		`import std/strutils\nlet line = stdin.readLine()\necho "read: ", line.strip()\n`,
+		'hello from stdin\n'
+	);
+	assert.deepEqual(one.errors, []);
+	assert.equal(one.stdout, 'read: hello from stdin\n');
+	assert.equal(one.exitCode, 0);
+
+	// More than one, which is what a program looping over `stdin.lines` does.
+	const many = await compiler.run(
+		`var count = 0\nfor line in stdin.lines:\n  inc count\n  echo line\necho "lines: ", count\n`,
+		'a\nb\nc\n'
+	);
+	assert.deepEqual(many.errors, []);
+	assert.equal(many.stdout, 'a\nb\nc\nlines: 3\n');
+
+	// No input at all: the end of input is reported rather than waited on.
+	const empty = await compiler.run(`echo stdin.readLine()\n`, '');
+	assert.equal(empty.exitCode, 1);
+	assert.match(empty.stderr, /EOF/);
+
+	// And the two streams are separate, which is what a console panel keys off.
+	const both = await compiler.run(`stdout.write("out\\n")\nstderr.write("err\\n")\n`);
+	assert.deepEqual(both.errors, []);
+	assert.equal(both.stdout, 'out\n');
+	assert.equal(both.stderr, 'err\n');
+	assert.equal(both.output, 'out\nerr\n');
+});
+
 test('the js backend can import the browser modules', async () => {
 	const compiler = await createCompiler({ target: 'js' });
 

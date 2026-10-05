@@ -167,8 +167,10 @@ The other toolchain is not shipped here at all. The `wasm` target reaches it thr
   be run where there is a document. Without `execute: false`, `run()` uses a frame when there is one and
   the caller's own scope when there is not. A program that loops forever will hang whatever thread that
   is, and nothing here can stop it.
-- **The `js` target's stdout is line-based.** The backend routes both `echo` and `stdout.write` through
-  `console`, so a program that writes without a newline gains one.
+- **The `js` target has no `stdin`, `stdout` or `stderr`.** `echo` goes to `console.log`, which arrives as
+  `stdout`, and `console.error` — reached with `jsffi` or `importjs` — arrives as `stderr`, so the two
+  streams exist but the names do not: `stdout.write` will not compile on this backend, with an import or
+  without one. Output is line-based either way, because it goes through `console`.
 - **Memory.** Budget for the Nim compiler's own footprint, plus the Clang runtime's few hundred MB if the
   `wasm` target is used at all.
 
