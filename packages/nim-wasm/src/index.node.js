@@ -2,10 +2,10 @@
 // and `createCompiler({ target: 'js' })` is enough on its own.
 import { createApi } from './api.js';
 import { executeJavaScript } from './js-runtime.node.js';
-import { loadNimCompiler } from './nim.node.js';
+import { acquireNimCompiler } from './nim.node.js';
 import { packagedAssets } from './packaged.node.js';
 
-const api = createApi({ packaged: packagedAssets, loadNimCompiler, executeJavaScript });
+const api = createApi({ packaged: packagedAssets, acquireNimCompiler, executeJavaScript });
 
 export const createCompiler = api.createCompiler;
 export const { TARGETS, targets } = api;

@@ -10716,24 +10716,15 @@ static __attribute__((unused)) int raise(int signum) {
   var DEFINES_MAIN = /\bint\s+main\s*\(/;
   var NIM_THREE_ARG_MAIN = /int\s+main\s*\(\s*int\s+(\w+)\s*,\s*char\s*\*\*\s*(\w+)\s*,\s*char\s*\*\*\s*(\w+)\s*\)\s*\{/;
   var adaptMainSignature = (content) => content.replace(NIM_THREE_ARG_MAIN, "int main(int $1, char** $2) {\n	char** $3 = (char**)0;");
-  var toolchains = /* @__PURE__ */ new Map();
   function loadClangToolchain({ baseUrl, onProgress }) {
-    const key = String(baseUrl);
-    if (!toolchains.has(key)) {
-      const pending = createToolchain({ baseUrl, onProgress }).catch((error) => {
-        toolchains.delete(key);
-        throw error;
-      });
-      toolchains.set(key, pending);
-    }
-    return toolchains.get(key);
+    return createToolchain({ baseUrl, onProgress });
   }
   var mounted = /* @__PURE__ */ new WeakSet();
   var mountHeaders = (toolchain, nimbase) => {
-    if (mounted.has(toolchain)) return;
+    if (mounted.has(toolchain.runtime)) return;
     toolchain.addFile(WASI_SIGNAL_HEADER_PATH, WASI_SIGNAL_HEADER);
     toolchain.addFile(NIMBASE_PATH, nimbase);
-    mounted.add(toolchain);
+    mounted.add(toolchain.runtime);
   };
   async function compileTranslationUnits(toolchain, { translationUnits, nimbase, onCompilerOutput = () => {
   } }) {
@@ -10810,7 +10801,7 @@ static __attribute__((unused)) int raise(int signum) {
   var DEFAULT_TARGET = TARGETS.WASM;
 
   // packages/nim-wasm/src/api.js
-  function createApi({ packaged, loadNimCompiler: loadNimCompiler2, executeJavaScript: executeJavaScript2 }) {
+  function createApi({ packaged, acquireNimCompiler: acquireNimCompiler2, executeJavaScript: executeJavaScript2 }) {
     async function createCompiler2(options = {}) {
       const target = resolveTarget(options.target ?? DEFAULT_TARGET);
       const source = resolveAssetSource(options, packaged);
@@ -10818,7 +10809,8 @@ static __attribute__((unused)) int raise(int signum) {
       });
       const onStatus = options.onStatus ?? (() => {
       });
-      const compiler = await loadNimCompiler2({ source, onStatus });
+      const { compiler, release: releaseCompiler } = await acquireNimCompiler2({ source, onStatus });
+      let disposed = false;
       const takeOutput = () => {
         const raw = compiler.takeOutput();
         if (raw.trim()) onLog(raw, "nim");
@@ -10873,6 +10865,7 @@ static __attribute__((unused)) int raise(int signum) {
          *   never ran.
          */
         async run(code, input = "", runOptions = {}) {
+          if (disposed) throw new Error("This compiler has been disposed.");
           if (typeof code !== "string") {
             throw new Error("run() needs the program source as its first argument.");
           }
@@ -10986,6 +10979,26 @@ static __attribute__((unused)) int raise(int signum) {
             compileMs: compileMs + linkMs,
             runMs: Math.round(performance.now() - runStarted)
           };
+        },
+        /**
+         * Release what this compiler holds: its reference on the shared Clang runtime, and the Nim
+         * compiler, which is dropped from the cache so that the next compiler loads a fresh one.
+         *
+         * Both are released rather than torn down, so anything else sharing them carries on — the
+         * runtime goes when its last holder lets go, and a run already in flight holds its own
+         * reference and finishes. Calling this twice is a no-op, and `run()` afterwards throws.
+         */
+        async dispose() {
+          if (disposed) return;
+          disposed = true;
+          releaseCompiler();
+          if (toolchainPromise) {
+            await toolchainPromise.then(
+              (built) => built.dispose(),
+              () => {
+              }
+            );
+          }
         }
       };
     }
@@ -11214,16 +11227,28 @@ static __attribute__((unused)) int raise(int signum) {
     });
   };
   var compilers = /* @__PURE__ */ new Map();
-  function loadNimCompiler({ source, onStatus = () => {
+  async function acquireNimCompiler({ source, onStatus = () => {
   } }) {
-    if (!compilers.has(source.key)) {
-      const pending = loadInBrowser({ source, onStatus }).catch((error) => {
-        compilers.delete(source.key);
+    let entry = compilers.get(source.key);
+    if (!entry) {
+      entry = { references: 0, pending: null };
+      entry.pending = loadInBrowser({ source, onStatus }).catch((error) => {
+        if (compilers.get(source.key) === entry) compilers.delete(source.key);
         throw error;
       });
-      compilers.set(source.key, pending);
+      compilers.set(source.key, entry);
     }
-    return compilers.get(source.key);
+    const compiler = await entry.pending;
+    entry.references += 1;
+    return {
+      compiler,
+      release() {
+        entry.references -= 1;
+        if (entry.references <= 0 && compilers.get(source.key) === entry) {
+          compilers.delete(source.key);
+        }
+      }
+    };
   }
   async function loadInBrowser({ source, onStatus }) {
     let settle;
@@ -11258,7 +11283,7 @@ static __attribute__((unused)) int raise(int signum) {
   }
 
   // packages/nim-wasm/src/index.js
-  var api = createApi({ packaged: null, loadNimCompiler, executeJavaScript });
+  var api = createApi({ packaged: null, acquireNimCompiler, executeJavaScript });
   var createCompiler = api.createCompiler;
   var { TARGETS: TARGETS2, targets } = api;
 

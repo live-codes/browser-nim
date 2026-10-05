@@ -7,10 +7,13 @@ import { compileTranslationUnits, loadClangToolchain, runArtifact } from './clan
 import { compilerDiagnostics, stripAnsi } from './output.js';
 import { DEFAULT_TARGET, resolveTarget, TARGETS } from './targets.js';
 
-export function createApi({ packaged, loadNimCompiler, executeJavaScript }) {
+export function createApi({ packaged, acquireNimCompiler, executeJavaScript }) {
 	/**
 	 * Create a compiler. One instance serves both targets, because the Nim compiler is the same program
 	 * either way and which output it produces is decided by the command it is given.
+	 *
+	 * A compiler holds a reference on the shared Clang runtime, for the `wasm` target, and on the shared
+	 * Nim compiler, so a caller that has finished with one should `dispose()` it rather than leave it.
 	 *
 	 * @param {object} [options]
 	 * @param {'wasm'|'js'} [options.target] - `wasm` (the default) compiles to C and then to WebAssembly
@@ -35,7 +38,12 @@ export function createApi({ packaged, loadNimCompiler, executeJavaScript }) {
 		const onLog = options.onLog ?? (() => {});
 		const onStatus = options.onStatus ?? (() => {});
 
-		const compiler = await loadNimCompiler({ source, onStatus });
+		const { compiler, release: releaseCompiler } = await acquireNimCompiler({ source, onStatus });
+
+		// Both things this compiler uses are shared: the Clang runtime behind the toolchain, and the Nim
+		// compiler. Releasing them is a reference going away rather than a teardown, so a caller that
+		// disposes one compiler cannot break another that is still using the same assets.
+		let disposed = false;
 
 		// The compiler's output since the last compile, forwarded to the caller's log and turned into
 		// diagnostics. Drained rather than pushed, because the loaded compiler is shared between compilers
@@ -103,6 +111,7 @@ export function createApi({ packaged, loadNimCompiler, executeJavaScript }) {
 			 *   never ran.
 			 */
 			async run(code, input = '', runOptions = {}) {
+				if (disposed) throw new Error('This compiler has been disposed.');
 				if (typeof code !== 'string') {
 					throw new Error('run() needs the program source as its first argument.');
 				}
@@ -224,6 +233,28 @@ export function createApi({ packaged, loadNimCompiler, executeJavaScript }) {
 					compileMs: compileMs + linkMs,
 					runMs: Math.round(performance.now() - runStarted)
 				};
+			},
+
+			/**
+			 * Release what this compiler holds: its reference on the shared Clang runtime, and the Nim
+			 * compiler, which is dropped from the cache so that the next compiler loads a fresh one.
+			 *
+			 * Both are released rather than torn down, so anything else sharing them carries on — the
+			 * runtime goes when its last holder lets go, and a run already in flight holds its own
+			 * reference and finishes. Calling this twice is a no-op, and `run()` afterwards throws.
+			 */
+			async dispose() {
+				if (disposed) return;
+				disposed = true;
+				releaseCompiler();
+				// The toolchain may still be loading, which is why this is async. A load that failed has
+				// nothing to release.
+				if (toolchainPromise) {
+					await toolchainPromise.then(
+						(built) => built.dispose(),
+						() => {}
+					);
+				}
 			}
 		};
 	}

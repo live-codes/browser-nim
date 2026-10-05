@@ -43,29 +43,23 @@ const NIM_THREE_ARG_MAIN = /int\s+main\s*\(\s*int\s+(\w+)\s*,\s*char\s*\*\*\s*(\
 const adaptMainSignature = (content) =>
 	content.replace(NIM_THREE_ARG_MAIN, 'int main(int $1, char** $2) {\n\tchar** $3 = (char**)0;');
 
-const toolchains = new Map();
-
 /**
- * Acquire the shared Clang toolchain, once per asset URL.
+ * Acquire the shared Clang runtime, for one compiler.
  *
- * The toolchain holds a reference on the shared runtime and is kept for the life of the thread: the
- * runtime costs ~29 MB of assets and ~84 MB resident, and keeping it is what makes a warm compile
- * ~100 ms instead of ~3 s. Nothing disposes it, because the only thing that ends it here is the worker
- * being terminated, which takes the whole runtime with it.
+ * A toolchain per compiler rather than one per asset URL, because the toolchain is the thing holding the
+ * runtime's reference. Caching a single handle here would hand every compiler in the thread the same one,
+ * and `dispose()` on any of them would then take the runtime out from under the rest. Acquiring per
+ * compiler keeps the reference count honest and costs nothing: the runtime is still acquired once per
+ * asset URL, inside the package, and a second acquisition of a loaded one is not a second load.
  */
 export function loadClangToolchain({ baseUrl, onProgress }) {
-	const key = String(baseUrl);
-	if (!toolchains.has(key)) {
-		const pending = createToolchain({ baseUrl, onProgress }).catch((error) => {
-			// A failed load must not poison the cache, or a retry can never succeed.
-			toolchains.delete(key);
-			throw error;
-		});
-		toolchains.set(key, pending);
-	}
-	return toolchains.get(key);
+	return createToolchain({ baseUrl, onProgress });
 }
 
+// One mount per runtime, rather than per toolchain. The runtime is what owns the filesystem and memfs
+// asserts if a file is added twice, so two compilers sharing a runtime have to mount these once between
+// them. The memory is keyed by the runtime for that reason; the first compiler's copy is the one that
+// stays, which is right as long as the assets come from one source, as the pin implies they do.
 const mounted = new WeakSet();
 
 /**
@@ -76,10 +70,10 @@ const mounted = new WeakSet();
  * "nimbase.h"` and `#include <signal.h>` resolve as written.
  */
 const mountHeaders = (toolchain, nimbase) => {
-	if (mounted.has(toolchain)) return;
+	if (mounted.has(toolchain.runtime)) return;
 	toolchain.addFile(WASI_SIGNAL_HEADER_PATH, WASI_SIGNAL_HEADER);
 	toolchain.addFile(NIMBASE_PATH, nimbase);
-	mounted.add(toolchain);
+	mounted.add(toolchain.runtime);
 };
 
 /**

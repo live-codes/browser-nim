@@ -5,6 +5,7 @@
 // `@live-codes/clang-wasm`'s toolchain, which needs no baseUrl in Node either.
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import vm from 'node:vm';
 
 import { createCompiler, targets, TARGETS } from '@live-codes/nim-wasm';
 
@@ -154,4 +155,51 @@ test('without a filesystem baseUrl is required, and the error says what to do', 
 		() => browserEntry.createCompiler({ target: 'js' }),
 		/baseUrl is required here[\s\S]*copy-assets/
 	);
+});
+
+test('dispose releases the compiler, and using it afterwards says so', async () => {
+	const compiler = await createCompiler({ target: 'js' });
+	assert.equal((await compiler.run('echo "before"\n')).stdout, 'before');
+
+	await compiler.dispose();
+	await compiler.dispose(); // and again, which is a no-op rather than an error
+
+	await assert.rejects(() => compiler.run('echo "after"\n'), /has been disposed/);
+});
+
+test('disposing one compiler leaves another one working', async () => {
+	// Both compile through one shared Clang runtime, which is the case a cached toolchain gets wrong:
+	// disposing either would have taken the runtime out from under the other, and the second compiler's
+	// headers would have been mounted into a filesystem that already had them.
+	const [first, second] = await Promise.all([
+		createCompiler({ target: 'wasm' }),
+		createCompiler({ target: 'wasm' })
+	]);
+	assert.equal((await first.run('echo "first"\n')).stdout, 'first\n');
+
+	await first.dispose();
+
+	assert.equal((await second.run('echo "second"\n')).stdout, 'second\n');
+	assert.equal((await second.run('echo "still"\n')).stdout, 'still\n');
+});
+
+test('the js program is self-sufficient: a console is all it needs to run', async () => {
+	const compiler = await createCompiler({ target: 'js' });
+	const { compiledCode } = await compiler.run(
+		`import strutils\necho "hi, ", "NIM".toLowerAscii, " ", 6 * 7\n`,
+		'',
+		{ execute: false }
+	);
+
+	// This is what makes the target usable as a compiler whose output the caller runs itself: one file,
+	// with nothing in it left to resolve.
+	assert.doesNotMatch(compiledCode, /^\s*import\s/m, 'expected no module imports');
+	assert.doesNotMatch(compiledCode, /\brequire\s*\(/, 'expected no requires');
+	assert.doesNotMatch(compiledCode, /\bdocument\b/, 'expected no DOM');
+
+	// A bare context with a console and nothing else is enough to run it.
+	const lines = [];
+	const sink = (...args) => lines.push(args.join(' '));
+	vm.runInNewContext(compiledCode, { console: { log: sink, error: sink, warn: sink } });
+	assert.deepEqual(lines, ['hi, nim 42']);
 });

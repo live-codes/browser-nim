@@ -15,18 +15,35 @@ import { createCompilerCore } from './nim-compile.js';
 
 const compilers = new Map();
 
-export function loadNimCompiler({ source, compileArgs = [], onLog = () => {}, onStatus = () => {} }) {
-	if (!compilers.has(source.key)) {
-		const pending = loadInNode({ source, compileArgs, onLog, onStatus }).catch((error) => {
-			compilers.delete(source.key);
+// Shared per asset source and counted, so the last compiler to be disposed can drop it — the same
+// arrangement as the browser entry's, and the reason `release()` exists at all.
+export async function acquireNimCompiler({ source, onStatus = () => {} }) {
+	let entry = compilers.get(source.key);
+	if (!entry) {
+		entry = { references: 0, pending: null };
+		entry.pending = loadInNode({ source, onStatus }).catch((error) => {
+			// A failed load must not poison the cache, or a retry can never succeed.
+			if (compilers.get(source.key) === entry) compilers.delete(source.key);
 			throw error;
 		});
-		compilers.set(source.key, pending);
+		compilers.set(source.key, entry);
 	}
-	return compilers.get(source.key);
+
+	const compiler = await entry.pending;
+	entry.references += 1;
+
+	return {
+		compiler,
+		release() {
+			entry.references -= 1;
+			if (entry.references <= 0 && compilers.get(source.key) === entry) {
+				compilers.delete(source.key);
+			}
+		}
+	};
 }
 
-async function loadInNode({ source, compileArgs, onLog, onStatus }) {
+async function loadInNode({ source, onStatus }) {
 	const [bundleBytes, wasmBytes] = await Promise.all([
 		source.readAsset('nim-bundle.js'),
 		source.readAsset('nim.wasm')

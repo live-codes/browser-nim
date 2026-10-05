@@ -81,7 +81,7 @@ this point rather than at the first `run`.
 | `exitCode` | The program's status, or `null` if it never ran because the compile failed. |
 | `compileMs` | Wall clock for the compile — for `wasm`, Nim's codegen plus clang and the link, which is what a caller is actually waiting for. |
 | `runMs` | Wall clock for the run, or `null` if it did not run. |
-| `compiledCode` | The `js` target's program, as emitted. |
+| `compiledCode` | The `js` target's program, as emitted: one self-sufficient file, which a caller can run itself. |
 
 `runOptions` may override `args` and `onOutput`. One more, for `js`:
 
@@ -89,9 +89,23 @@ this point rather than at the first `run`.
 const { compiledCode } = await compiler.run(code, '', { execute: false });
 ```
 
-`execute: false` compiles without running and hands the program back, for a caller that wants to place it
-itself — in its own sandbox, or on a thread with a document. `compiler.target` says which target a
-compiler was created for, and `assetSource` says where its assets came from.
+`execute: false` compiles without running and hands the program back, for a caller that has somewhere of
+its own to run it — its own sandbox, or the page it is already on. The program is one file with nothing
+left to resolve: it imports nothing, requires nothing, and reaches for no DOM of its own accord, so a
+`console` beside it is the whole of what it needs. That is what makes the `js` target usable the way a
+compiler that *emits* a program is used — compile in a worker, hand the output to the page, run it there.
+`compiler.target` says which target a compiler was created for, and `assetSource` says where its assets
+came from.
+
+### `compiler.dispose()`
+
+Release what the compiler holds: its reference on the shared Clang runtime, for the `wasm` target, and the
+Nim compiler. Both are shared, so this drops a reference rather than tearing anything down — the runtime
+goes when its last holder lets go, and another compiler on the same assets carries on untouched. Calling
+it twice is a no-op, and `run()` afterwards throws.
+
+A caller that creates compilers as a user moves between languages should dispose them; a page that creates
+one and keeps it has nothing to do.
 
 ### `@live-codes/nim-wasm/frame`
 
@@ -105,7 +119,8 @@ const { stdout, failed } = await executeJavaScript(compiledCode, { onStdout, onS
 ```
 
 In a browser that is a sandboxed iframe, which is where the target's document comes from and what keeps
-the program off the page; in Node it is a fresh `vm` context.
+the program off the page; in Node it is a fresh `vm` context. A caller that already has a sandbox of its
+own — a page, or a playground — should run the program in that instead, and take it with `execute: false`.
 
 ### `@live-codes/nim-wasm/iife`
 
@@ -139,10 +154,12 @@ The other toolchain is not shipped here at all. The `wasm` target reaches it thr
   writing over one another. The Clang toolchain serialises itself for the same reason.
 - **`onOutput` is a stream, and the result is the truth.** The program's output arrives chunk by chunk
   while it runs, and in full in the result when it finishes; draw the first and trust the second.
-- **The `js` target's program runs where you call it.** With a document that is an iframe; without one —
-  a worker, or Node — it runs in the current scope, so it has no DOM. A program that needs one has to be
-  run where there is one, which is what `execute: false` is for. A program that loops forever will hang
-  whatever thread that is, and nothing here can stop it.
+- **The `js` target's program needs a console, not a document.** Its output is one file with nothing to
+  resolve — imported Nim modules are inlined into it — so `execute: false` and an `eval` in a context with
+  a `console` is enough to run it. A program that itself uses `dom` or `jsffi` is the exception, and has to
+  be run where there is a document. Without `execute: false`, `run()` uses a frame when there is one and
+  the caller's own scope when there is not. A program that loops forever will hang whatever thread that
+  is, and nothing here can stop it.
 - **The `js` target's stdout is line-based.** The backend routes both `echo` and `stdout.write` through
   `console`, so a program that writes without a newline gains one.
 - **Memory.** Budget for the Nim compiler's own footprint, plus the Clang runtime's few hundred MB if the
@@ -158,6 +175,10 @@ Real compiles and real runs, in Node, off the assets that ship in this package: 
 the result shape, diagnostics for a program that does not compile, `compileArgs`, program argv, streaming
 output, `execute: false`, one compiler across repeated runs, two targets side by side, and the error a
 browser gets when `baseUrl` is missing.
+
+The lifecycle is covered too: `dispose()`, the error `run()` throws after it, one compiler being disposed
+while another on the same runtime keeps working, and the `js` program's self-sufficiency — the emitted file
+run in a bare context with a `console` and nothing else.
 
 What Node cannot test is the browser half of the `js` target — the frame, and the document a program can
 reach through it — which is covered by `browser-nim`, the playground this package came out of, where both

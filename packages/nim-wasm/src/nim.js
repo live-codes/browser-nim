@@ -36,25 +36,44 @@ const loadScript = (src) => {
 const compilers = new Map();
 
 /**
- * Load the compiler once per asset source and keep it: it holds the standard library in its memory
- * filesystem, so a warm compiler is the difference between a compile and a recompile.
+ * Acquire the compiler for an asset source, loading it the first time and sharing it after that: it holds
+ * the standard library in its memory filesystem, so a warm compiler is the difference between a compile
+ * and a recompile.
+ *
+ * The count is what makes the sharing releasable. `release()` is the other half, and the last compiler to
+ * be disposed drops the entry, so a thread that is finished with Nim gives the compiler's memory back
+ * instead of holding it forever. A compiler object that is still held keeps working; what changes is that
+ * the next one loads a fresh copy.
  *
  * @param {object} options
  * @param {object} options.source - from `resolveAssetSource`. The browser's is a hosted one.
- * @param {(text: string, stream: 'stdout'|'stderr') => void} [options.onLog] - the compiler's own output,
- *   which is where its diagnostics arrive.
  * @param {(text: string) => void} [options.onStatus]
+ * @returns {Promise<{compiler: object, release: () => void}>}
  */
-export function loadNimCompiler({ source, onStatus = () => {} }) {
-	if (!compilers.has(source.key)) {
-		const pending = loadInBrowser({ source, onStatus }).catch((error) => {
+export async function acquireNimCompiler({ source, onStatus = () => {} }) {
+	let entry = compilers.get(source.key);
+	if (!entry) {
+		entry = { references: 0, pending: null };
+		entry.pending = loadInBrowser({ source, onStatus }).catch((error) => {
 			// A failed load must not poison the cache, or a retry can never succeed.
-			compilers.delete(source.key);
+			if (compilers.get(source.key) === entry) compilers.delete(source.key);
 			throw error;
 		});
-		compilers.set(source.key, pending);
+		compilers.set(source.key, entry);
 	}
-	return compilers.get(source.key);
+
+	const compiler = await entry.pending;
+	entry.references += 1;
+
+	return {
+		compiler,
+		release() {
+			entry.references -= 1;
+			if (entry.references <= 0 && compilers.get(source.key) === entry) {
+				compilers.delete(source.key);
+			}
+		}
+	};
 }
 
 async function loadInBrowser({ source, onStatus }) {
