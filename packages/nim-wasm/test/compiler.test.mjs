@@ -182,6 +182,31 @@ test('wasm: stdin, stdout and stderr are the real thing', async () => {
 	assert.equal(both.output, 'out\nerr\n');
 });
 
+test('wasm: a run does not inherit the previous run\'s stdin', async () => {
+	// What this guards against is a shared runtime holding on to the previous program's input: an empty
+	// run leaving EOF behind for the next one, or a run that reads one line of three leaving the other two
+	// for whatever runs next. Compilers share the runtime that does the reading, so both orders matter.
+	const readOne = `import std/strutils
+
+var line = "<eof>"
+try:
+  line = stdin.readLine().strip()
+except EOFError:
+  discard
+echo "read: [", line, "]"
+`;
+
+	const compiler = await createCompiler({ target: 'wasm' });
+	assert.equal((await compiler.run(readOne, 'a\nb\nc\n')).stdout, 'read: [a]\n');
+	assert.equal((await compiler.run(readOne, '')).stdout, 'read: [<eof>]\n');
+	assert.equal((await compiler.run(readOne, 'x\n')).stdout, 'read: [x]\n');
+
+	// And across two compilers, which is where a provider kept on the runtime would show up.
+	const other = await createCompiler({ target: 'wasm' });
+	assert.equal((await other.run(readOne, '')).stdout, 'read: [<eof>]\n');
+	assert.equal((await other.run(readOne, 'y\n')).stdout, 'read: [y]\n');
+});
+
 test('the js backend can import the browser modules', async () => {
 	const compiler = await createCompiler({ target: 'js' });
 
