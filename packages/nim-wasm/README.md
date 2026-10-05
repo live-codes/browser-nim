@@ -39,11 +39,18 @@ by name.
 | how | Nim's `c` backend, then clang and lld | Nim's `js` backend |
 | artifact | 8 `.c` files, then ~129 KB of wasm | 23 KB of JavaScript |
 | compile | ~0.9 s of Nim, then ~3.3 s of clang and linking | ~0.4 – 0.9 s |
-| can | C interop, real 64-bit integers, `cast` and pointers | reach the document, `importjs` |
+| can | C interop, real 64-bit integers, `cast` and pointers | drive the page it runs in, through `dom` and `jsffi` |
 
 Neither is a subset of the other, which is why both exist rather than one replacing the other.
 
-What `js` costs is fidelity, and the gap is wider than "slower": `importc` and C interop do not exist;
+A `js` program can drive the page it runs in. The browser modules that ship with the compiler — `dom`,
+`jsffi`, `jsconsole`, `jscore`, `jsre` and `asyncjs` — are on its search path, so `import dom` and
+`document.title = "…"` work as written, and anything else on the page is reachable through `jsffi`. None of
+it is needed to *run* a program: one that imports none of them is a single file needing a `console` and
+nothing else, which is what makes it safe to hand to a page and run there.
+
+What `js` costs is fidelity, and the gap is wider than "slower": there is no C to interoperate with, since
+`importc` binds JavaScript there and not C;
 64-bit integers map to JavaScript numbers and are not exact (`--jsbigint64` is experimental); `cast`,
 pointer arithmetic and anything depending on `sizeof` are unsupported; `os`, `osproc`, `net` and
 `threads` are unavailable, so `commandLineParams()` does not work; and `importjs` requires a `#`

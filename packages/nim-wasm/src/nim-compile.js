@@ -42,9 +42,16 @@ export const NIM_C_COMPILE_ARGS = Object.freeze([
 
 // The `js` backend. None of the above applies: there is no allocator to choose, no C compiler to stop
 // before, and no link step. What comes out is one self-contained file.
+//
+// `lib/js` is on the search path because the browser modules live there and the compiler does not look
+// there on its own. `dom`, `jsffi`, `jsconsole`, `jscore`, `jsre` and `asyncjs` are all in the standard
+// library the bundle carries — `import dom` fails with "cannot open file: dom" without this, which reads
+// as the module being missing when it is only unreachable. They are what lets a program drive the page it
+// runs in, which is the whole reason to use this backend over the WebAssembly one.
 export const NIM_JS_COMPILE_ARGS = Object.freeze([
 	'js',
 	...COMMON_ARGS,
+	'--path:/lib/js',
 	'-o:/tmp/user.js',
 	NIM_USER_FILE
 ]);

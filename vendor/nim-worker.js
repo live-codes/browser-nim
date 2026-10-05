@@ -11146,6 +11146,7 @@ static __attribute__((unused)) int raise(int signum) {
   var NIM_JS_COMPILE_ARGS = Object.freeze([
     "js",
     ...COMMON_ARGS,
+    "--path:/lib/js",
     "-o:/tmp/user.js",
     NIM_USER_FILE
   ]);

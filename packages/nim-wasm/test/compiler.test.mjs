@@ -149,6 +149,52 @@ test('the two targets can be used side by side', async () => {
 	assert.equal(results[1].stdout, 'wasm\n');
 });
 
+test('the js backend can import the browser modules', async () => {
+	const compiler = await createCompiler({ target: 'js' });
+
+	// `lib/js` is on the search path by default, so these resolve. Without it, `import dom` fails with
+	// "cannot open file: dom", which reads like a missing module rather than a misplaced one.
+	const dom = await compiler.run(
+		`import dom
+document.title = "Nim was here"
+let el = document.createElement("p")
+el.innerText = "hello from Nim"
+document.body.appendChild(el)
+`,
+		'',
+		{ execute: false }
+	);
+	assert.deepEqual(dom.errors, []);
+	assert.match(dom.compiledCode, /\bdocument\b/);
+
+	// Run against a stand-in page, which is what this target is for.
+	const created = [];
+	const page = {
+		title: '',
+		body: { appendChild: (element) => created.push(element) },
+		createElement: (tag) => ({ tag, innerText: '' })
+	};
+	vm.runInNewContext(dom.compiledCode, { document: page, console });
+	assert.equal(page.title, 'Nim was here');
+	assert.deepEqual(
+		created.map((element) => `${element.tag}:${element.innerText}`),
+		['p:hello from Nim']
+	);
+
+	// jsffi is the general route to anything else on the page.
+	const interop = await compiler.run(
+		`import jsffi
+
+proc alert(message: cstring) {.importc.}
+alert("hello")
+`,
+		'',
+		{ execute: false }
+	);
+	assert.deepEqual(interop.errors, []);
+	assert.match(interop.compiledCode, /alert\(/);
+});
+
 test('without a filesystem baseUrl is required, and the error says what to do', async () => {
 	const browserEntry = await import('../src/index.js');
 	await assert.rejects(
