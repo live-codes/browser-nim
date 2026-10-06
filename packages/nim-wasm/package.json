@@ -1,6 +1,6 @@
 {
   "name": "@live-codes/nim-wasm",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Run Nim by either backend, on the Nim compiler compiled to WebAssembly",
   "type": "module",
   "license": "MIT",
