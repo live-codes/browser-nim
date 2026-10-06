@@ -1,6 +1,6 @@
 {
   "name": "@live-codes/nim-wasm",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Run Nim by either backend, on the Nim compiler compiled to WebAssembly",
   "type": "module",
   "license": "MIT",
@@ -40,7 +40,7 @@
     "esbuild": "^0.25.0"
   },
   "dependencies": {
-    "@live-codes/clang-wasm": "^0.2.0"
+    "@live-codes/clang-wasm": "^0.3.0"
   },
   "keywords": [
     "nim",
