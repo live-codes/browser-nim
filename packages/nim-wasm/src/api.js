@@ -3,7 +3,7 @@
 // that differ between those environments — how the compiler is loaded, and where the JavaScript target's
 // program runs — are handed in rather than guessed at.
 import { resolveAssetSource } from './assets.js';
-import { compileTranslationUnits, loadClangToolchain, runArtifact } from './clang.js';
+import { assertToolchain, compileTranslationUnits, loadClangToolchain, runArtifact } from './clang.js';
 import { compilerDiagnostics, stripAnsi } from './output.js';
 import { DEFAULT_TARGET, resolveTarget, TARGETS } from './targets.js';
 
@@ -22,7 +22,12 @@ export function createApi({ packaged, acquireNimCompiler, executeJavaScript }) {
 	 *   without a filesystem; in Node it can be omitted to use the assets in this package.
 	 * @param {string} [options.clangBaseUrl] - where the Clang toolchain's assets are, for the `wasm`
 	 *   target. Passed to `@live-codes/clang-wasm`, whose rules apply: required in a browser, optional in
-	 *   Node. The runtime is shared with any C/C++ compilers created against the same assets.
+	 *   Node. Unused when `toolchain` is given.
+	 * @param {object} [options.toolchain] - a toolchain from `@live-codes/clang-wasm`'s
+	 *   `createToolchain()`, for a caller that already holds one. It is compiled through instead of
+	 *   acquiring another, which is how a page running C/C++ alongside Nim pays for one Clang runtime
+	 *   rather than two — the pool lives inside a module instance. It stays the caller's: `dispose()`
+	 *   never releases it. Makes `clangBaseUrl` and `onProgress` unused.
 	 * @param {string[]} [options.compileArgs] - extra Nim flags, before the source path.
 	 * @param {string[]} [options.args] - default program argv, for the `wasm` target.
 	 * @param {(value: number) => void} [options.onProgress] - toolchain download progress, 0 to 1.
@@ -54,13 +59,19 @@ export function createApi({ packaged, acquireNimCompiler, executeJavaScript }) {
 			return compilerDiagnostics(raw);
 		};
 
+		// A toolchain the caller already holds is compiled through as it is, so a page running C/C++ and Nim
+		// pays for one runtime instead of two. Only a toolchain acquired here is this compiler's to release.
+		const callersToolchain = options.toolchain ? assertToolchain(options.toolchain) : null;
+
 		let toolchainPromise = null;
 		const toolchain = () => {
 			if (!toolchainPromise) {
-				toolchainPromise = loadClangToolchain({
-					baseUrl: options.clangBaseUrl,
-					onProgress: options.onProgress
-				});
+				toolchainPromise = callersToolchain
+					? Promise.resolve(callersToolchain)
+					: loadClangToolchain({
+							baseUrl: options.clangBaseUrl,
+							onProgress: options.onProgress
+						});
 			}
 			return toolchainPromise;
 		};
@@ -242,6 +253,9 @@ export function createApi({ packaged, acquireNimCompiler, executeJavaScript }) {
 			 * Both are released rather than torn down, so anything else sharing them carries on — the
 			 * runtime goes when its last holder lets go, and a run already in flight holds its own
 			 * reference and finishes. Calling this twice is a no-op, and `run()` afterwards throws.
+			 *
+			 * A toolchain passed in through `toolchain` is not released at all: it belongs to the caller,
+			 * and other languages may be compiling through it.
 			 */
 			async dispose() {
 				if (disposed) return;
@@ -249,7 +263,7 @@ export function createApi({ packaged, acquireNimCompiler, executeJavaScript }) {
 				releaseCompiler();
 				// The toolchain may still be loading, which is why this is async. A load that failed has
 				// nothing to release.
-				if (toolchainPromise) {
+				if (toolchainPromise && !callersToolchain) {
 					await toolchainPromise.then(
 						(built) => built.dispose(),
 						() => {}

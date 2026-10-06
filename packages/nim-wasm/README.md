@@ -70,7 +70,8 @@ this point rather than at the first `run`.
 | --- | --- |
 | `target` | `'wasm'` (default) or `'js'`. Aliases: `c`, `nim-wasm`, `javascript`. |
 | `baseUrl` | Where this package's assets are served from. **Optional in Node**, where the assets that ship in the package are read off disk; required anywhere else. |
-| `clangBaseUrl` | Where the Clang toolchain's assets are, for `wasm`. Passed to `@live-codes/clang-wasm`, whose rules apply — required in a browser, optional in Node — and whose runtime is *shared* with any C/C++ compilers created against the same assets, so a page running both pays for the toolchain once or not at all. |
+| `clangBaseUrl` | Where the Clang toolchain's assets are, for `wasm`. Passed to `@live-codes/clang-wasm`, whose rules apply — required in a browser, optional in Node. Unused when `toolchain` is given. |
+| `toolchain` | A toolchain from `@live-codes/clang-wasm`'s `createToolchain()`, for a caller that already holds one. Compiling through it is what makes a page running C/C++ alongside Nim pay for one Clang runtime rather than two, because the pool that shares a runtime lives inside a module instance and another instance's cannot be reached from outside. It stays the caller's: `dispose()` never releases it. Makes `clangBaseUrl` and `onProgress` unused. |
 | `compileArgs` | Extra Nim flags, e.g. `['--define:release2']`. |
 | `args` | Default program argv, for `wasm`. |
 | `onProgress` | `(value) => {}`, 0 to 1, while the toolchain downloads. |
@@ -110,6 +111,9 @@ Release what the compiler holds: its reference on the shared Clang runtime, for 
 Nim compiler. Both are shared, so this drops a reference rather than tearing anything down — the runtime
 goes when its last holder lets go, and another compiler on the same assets carries on untouched. Calling
 it twice is a no-op, and `run()` afterwards throws.
+
+A toolchain handed in through `toolchain` is not released at all: it belongs to whoever passed it, and
+other languages may be compiling through it.
 
 A caller that creates compilers as a user moves between languages should dispose them; a page that creates
 one and keeps it has nothing to do.

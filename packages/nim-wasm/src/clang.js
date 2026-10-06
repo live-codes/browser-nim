@@ -56,6 +56,32 @@ export function loadClangToolchain({ baseUrl, onProgress }) {
 	return createToolchain({ baseUrl, onProgress });
 }
 
+/** What a toolchain has to offer for this package to compile through it. */
+const TOOLCHAIN_METHODS = ['addFile', 'lock', 'captureCompilerOutput', 'execute'];
+
+/**
+ * Check a toolchain the caller made with `@live-codes/clang-wasm`'s `createToolchain()`.
+ *
+ * This is the one place this package reads an object it did not make, so a wrong one is worth naming here
+ * rather than failing in the middle of a compile with `undefined is not a function`.
+ */
+export const assertToolchain = (toolchain) => {
+	if (!toolchain || typeof toolchain !== 'object') {
+		throw new Error(
+			'`toolchain` needs the object `createToolchain()` returns from `@live-codes/clang-wasm/toolchain`.',
+		);
+	}
+	const missing = TOOLCHAIN_METHODS.filter((name) => typeof toolchain[name] !== 'function');
+	if (!toolchain.runtime || missing.length) {
+		throw new Error(
+			'`toolchain` is not a toolchain: ' +
+				(missing.length ? `no ${missing.join(', ')}` : 'no runtime') +
+				'. It should come from `createToolchain()` in `@live-codes/clang-wasm/toolchain`.',
+		);
+	}
+	return toolchain;
+};
+
 // One mount per runtime, rather than per toolchain. The runtime is what owns the filesystem and memfs
 // asserts if a file is added twice, so two compilers sharing a runtime have to mount these once between
 // them. The memory is keyed by the runtime for that reason; the first compiler's copy is the one that

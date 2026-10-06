@@ -287,6 +287,47 @@ test('disposing one compiler leaves another one working', async () => {
 	assert.equal((await second.run('echo "still"\n')).stdout, 'still\n');
 });
 
+test('a toolchain from the caller is used, and is not released for them', async () => {
+	// The shape LiveCodes needs: it has a Clang runtime for C/C++, and hands the toolchain over so Nim
+	// compiles through that one instead of a second.
+	const { createToolchain } = await import('@live-codes/clang-wasm/toolchain');
+	const real = await createToolchain({});
+
+	let locked = false;
+	let released = false;
+	const watched = {
+		...real,
+		lock: (work) => {
+			locked = true;
+			return real.lock(work);
+		},
+		dispose: () => {
+			released = true;
+			return real.dispose();
+		}
+	};
+
+	const compiler = await createCompiler({ target: 'wasm', toolchain: watched });
+	assert.equal((await compiler.run('echo "through the caller\'s toolchain"\n')).stdout, 'through the caller\'s toolchain\n');
+	assert.equal(locked, true, 'expected the compile to go through the toolchain that was handed over');
+
+	await compiler.dispose();
+	assert.equal(released, false, 'dispose() must not release a toolchain the caller owns');
+
+	// Which means the caller can still compile through it.
+	const second = await createCompiler({ target: 'wasm', toolchain: real });
+	assert.equal((await second.run('echo "still mine"\n')).stdout, 'still mine\n');
+	await second.dispose();
+	real.dispose();
+});
+
+test('something passed as a toolchain that is not one is named', async () => {
+	await assert.rejects(
+		() => createCompiler({ target: 'wasm', toolchain: {} }),
+		/no addFile, lock, captureCompilerOutput, execute/
+	);
+});
+
 test('the js program is self-sufficient: a console is all it needs to run', async () => {
 	const compiler = await createCompiler({ target: 'js' });
 	const { compiledCode } = await compiler.run(
